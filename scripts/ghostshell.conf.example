@@ -1,0 +1,74 @@
+# ghostshell runtime configuration
+# File: /etc/ghostshell/ghostshell.conf  (override path: GHOSTSHELL_CONFIG env var)
+# Env vars always override this file (GHOSTSHELL_DAEMON_SOCK, GHOSTSHELL_CENTRAL_DIR, etc.)
+# Restart ghostshell-daemon after editing: systemctl restart ghostshell-daemon
+
+# Unix socket path the ghostshell-daemon daemon listens on.
+socket_path = /run/ghostshell-daemon.sock
+
+# Root-only directory where encrypted session recordings are stored.
+central_dir = /var/lib/ghostshell
+
+# Path to the at-rest encryption key.
+# Relative paths are joined with central_dir; empty = <central_dir>/.ghostshell.key
+key_file = .ghostshell.key
+
+# Seconds to wait when connecting to ghostshell-daemon (float, e.g. 0.5 or 2).
+dial_timeout_sec = 1
+
+# Milliseconds between stdin EOF Ctrl-D and force-closing the PTY master.
+# Increase if bash takes longer to exit gracefully on your system.
+eof_grace_ms = 500
+
+# Maximum bytes stored per ansible task stdout/stderr output.
+ansible_output_cap = 8192
+
+# PTY read buffer size in bytes (minimum 4096). Larger = fewer syscalls on
+# high-throughput sessions; smaller = lower per-session memory usage.
+scroll_buffer = 32768
+
+# Logging verbosity for ghostshell-daemon (0–5).
+#   0 = off (no log output)
+#   1 = error   — write failures, fatal conditions
+#   2 = warn    — retries, recoverable errors, fallback paths
+#   3 = info    — startup, session open/close  (default)
+#   4 = debug   — connection flow, config loading details
+#   5 = trace   — every read/write operation
+# Override: GHOSTSHELL_LOG_LEVEL=<n>
+log_level = 3
+
+# Daemon log file. Empty disables file logging and leaves logs in journald only.
+# Override: GHOSTSHELL_LOG_FILE=<path>
+log_file = /var/log/ghostshell/ghostshell.log
+
+# ── Backup (all three keys required together; all disabled by default) ────────
+#
+# Mechanism: bucket_aws | bucket_gcp | rsync | (empty = disabled)
+# Invalid backup_type silently falls back to "" (disabled).
+# Env overrides: GHOSTSHELL_BACKUP_TYPE, GHOSTSHELL_BACKUP_TARGET, GHOSTSHELL_BACKUP_INTERVAL_SEC
+#
+# Uncomment ONE block below to enable backup.
+
+# -- AWS S3 ------------------------------------------------------------------
+# Requires: aws CLI installed + credentials configured (IAM role, ~/.aws, or env vars).
+# Command run: aws s3 sync <central_dir> <backup_target>
+#
+# backup_type         = bucket_aws
+# backup_target       = s3://my-company-ghostshell/recordings
+# backup_interval_sec = 3600
+
+# -- GCP Cloud Storage -------------------------------------------------------
+# Requires: gsutil CLI installed + credentials configured (ADC or service account).
+# Command run: gsutil -m rsync -r <central_dir> <backup_target>
+#
+# backup_type         = bucket_gcp
+# backup_target       = gs://my-company-ghostshell/recordings
+# backup_interval_sec = 3600
+
+# -- rsync -------------------------------------------------------------------
+# Requires: rsync installed + passwordless SSH from root to backup host.
+# Command run: rsync -a --delete <central_dir>/ <backup_target>
+#
+# backup_type         = rsync
+# backup_target       = backup-user@backup.internal:/var/backups/ghostshell
+# backup_interval_sec = 1800

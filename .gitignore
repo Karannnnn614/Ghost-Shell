@@ -1,0 +1,31 @@
+/bin/
+/release/
+*.cast
+*.out
+*.test
+
+# AI assistant instruction/config files (local only; may hold deploy/server details)
+CLAUDE.md
+.claude/
+GEMINI.md
+.cursor/
+.cursorrules
+.aider*
+.windsurfrules
+.github/copilot-instructions.md
+.playwright-mcp/
+build/
+scripts/ansible/__pycache__/
+
+docs/superpowers/
+.antigravitycli/
+/ghostshell
+
+# ruflo / claude-flow runtime artifacts
+.claude-flow/
+.mcp.json
+agentdb.rvf
+agentdb.rvf.lock
+ruvector.db
+# Added by code-review-graph
+.code-review-graph/

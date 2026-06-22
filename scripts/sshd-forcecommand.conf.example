@@ -1,0 +1,19 @@
+# Record non-interactive SSH commands (and interactive logins) with ghostshell.
+#
+# Enable:
+#   sudo cp /usr/share/doc/ghostshell/sshd-forcecommand.conf.example \
+#           /etc/ssh/sshd_config.d/zz-ghostshell.conf
+#   sudo sshd -t && sudo systemctl reload ssh   # validate, then reload
+#
+# The wrapper passes scp/sftp/rsync/git transfers through untouched and is
+# fail-open (never blocks SSH). Note: recorded non-interactive commands run
+# under a PTY, so their output is line-cooked (CR added) and a TTY is present —
+# a few tools behave differently than with no TTY.
+ForceCommand /usr/libexec/ghostshell-ssh-wrap
+
+# To EXCLUDE an admin/automation account (its commands won't be recorded;
+# its interactive logins are still recorded by the profile.d hook), use a
+# Match block instead of the global ForceCommand above:
+#
+#   Match User *,!adminuser
+#       ForceCommand /usr/libexec/ghostshell-ssh-wrap

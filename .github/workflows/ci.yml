@@ -1,0 +1,64 @@
+name: CI
+
+# Quality gates for every push and pull request. This complements (does not
+# replace) pipeline.yml, which owns versioning and the Auto Release. Here we add
+# the static-analysis gates (staticcheck, golangci-lint) that the release
+# pipeline does not run, plus the standard gofmt/vet/test/build checks.
+
+on:
+  push:
+    branches-ignore: [main]   # main is covered by pipeline.yml
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    env:
+      CGO_ENABLED: '0'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l $(find . -name '*.go' -not -path './vendor/*'))
+          if [ -n "$unformatted" ]; then
+            echo "Not gofmt-clean:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: staticcheck
+        uses: dominikh/staticcheck-action@v1
+        with:
+          version: latest
+          install-go: false
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+
+      - name: go test
+        run: go test ./... -count=1
+
+      - name: make build
+        run: make build

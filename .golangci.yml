@@ -1,0 +1,32 @@
+# golangci-lint configuration for ghostshell.
+#
+# The default linter set (errcheck, gosimple, govet, ineffassign, staticcheck,
+# unused) is kept — these catch real correctness and resource bugs. We surface
+# every finding in CI (no per-linter/same-issue caps) so nothing is silently
+# hidden.
+#
+# errcheck is relaxed inside *_test.go only: test setup writes to t.TempDir and
+# similar best-effort I/O where an error would fail the test anyway, and checking
+# each one adds noise without catching real defects. Production code keeps the
+# full errcheck gate.
+
+run:
+  timeout: 5m
+
+linters:
+  enable:
+    - errcheck
+    - gosimple
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+
+issues:
+  # Show everything; do not collapse repeated findings.
+  max-same-issues: 0
+  max-issues-per-linter: 0
+  exclude-rules:
+    - path: _test\.go
+      linters:
+        - errcheck

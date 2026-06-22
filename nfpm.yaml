@@ -1,0 +1,103 @@
+name: ghostshell
+arch: amd64
+platform: linux
+version: ${GHOSTSHELL_VERSION}
+section: utils
+priority: optional
+maintainer: ghostshell-tracker maintainers <noreply@example.com>
+description: |
+  Record and replay Linux terminal sessions.
+  ghostshell runs a shell under a PTY and captures its output as asciinema v2
+  cast files. The ghostshell-daemon root daemon collects sessions from all users into
+  a root-only central store (/var/lib/ghostshell) for audit, with live tail.
+vendor: ghostshell-tracker
+homepage: https://github.com/karan/ghostshell-tracker
+license: GPL-2.0
+
+# Runtime dependencies. Binaries are static (no shared-lib deps); these cover
+# tools used by the post-install script and optional integration.
+depends:
+  - e2fsprogs   # provides chattr/lsattr (key is locked immutable)
+recommends:
+  - bash-completion
+
+contents:
+  - src: ./bin/ghostshell
+    dst: /usr/bin/ghostshell
+    file_info:
+      mode: 0755
+  - src: ./bin/ghostshell-daemon
+    dst: /usr/libexec/ghostshell-daemon
+    file_info:
+      mode: 0755
+  # Central root-only store. Packaged as an empty dir so the security-critical
+  # 0700 root:root mode is in place immediately on install, before the daemon
+  # (or postinstall) runs. Recordings and the encryption key are created at
+  # runtime by ghostshell-daemon, not shipped in the package.
+  - dst: /var/lib/ghostshell
+    type: dir
+    file_info:
+      mode: 0700
+      owner: root
+      group: root
+  - dst: /var/log/ghostshell
+    type: dir
+    file_info:
+      mode: 0750
+      owner: root
+      group: root
+  - src: ./scripts/systemd/ghostshell-daemon.service
+    dst: /lib/systemd/system/ghostshell-daemon.service
+    file_info:
+      mode: 0644
+  - src: ./internal/complete/ghostshell.bash
+    dst: /usr/share/bash-completion/completions/ghostshell
+    file_info:
+      mode: 0644
+  - src: ./man/ghostshell.1
+    dst: /usr/share/man/man1/ghostshell.1
+    file_info:
+      mode: 0644
+  - src: ./README.md
+    dst: /usr/share/doc/ghostshell/README.md
+    file_info:
+      mode: 0644
+  - src: ./LICENSE
+    dst: /usr/share/doc/ghostshell/LICENSE
+    file_info:
+      mode: 0644
+  - src: ./scripts/profile.d/ghostshell-autorec.sh
+    dst: /etc/profile.d/ghostshell-autorec.sh
+    type: "config|noreplace"
+    file_info:
+      mode: 0644
+  - src: ./scripts/ghostshell-ssh-wrap.sh
+    dst: /usr/libexec/ghostshell-ssh-wrap
+    file_info:
+      mode: 0755
+  - src: ./scripts/sshd-forcecommand.conf.example
+    dst: /usr/share/doc/ghostshell/sshd-forcecommand.conf.example
+    file_info:
+      mode: 0644
+  - src: scripts/ansible/ghostshell.py
+    dst: /usr/share/ghostshell/ansible/ghostshell.py
+    file_info:
+      mode: 0644
+  - src: scripts/ansible/README.md
+    dst: /usr/share/ghostshell/ansible/README.md
+    file_info:
+      mode: 0644
+  - src: scripts/ghostshell.conf.example
+    dst: /usr/share/ghostshell/ghostshell.conf.example
+    file_info:
+      mode: 0644
+  - src: scripts/ghostshell.conf.example
+    dst: /etc/ghostshell/ghostshell.conf
+    type: "config|noreplace"
+    file_info:
+      mode: 0644
+
+scripts:
+  postinstall: ./packaging/postinstall.sh
+  preremove:   ./packaging/preremove.sh
+  postremove:  ./packaging/postremove.sh

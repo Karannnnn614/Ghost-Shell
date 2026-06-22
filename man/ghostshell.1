@@ -1,0 +1,615 @@
+.\" Manpage for ghostshell.
+.TH GHOSTSHELL 1 "2026-06-11" "ghostshell 1.0.43" "User Commands"
+.SH NAME
+ghostshell \- record and replay Linux terminal sessions
+.SH SYNOPSIS
+.B ghostshell rec
+.RB [ \-q ]
+.RB [ \-o
+.IR file ]
+.RI [ command
+.RI [ args ...]]
+.br
+.B ghostshell play
+.RB [ \-\-speed
+.IR N ]
+.RB [ \-\-idle
+.IR N ]
+.IR file | id
+.br
+.B ghostshell ls
+.RB [ \-\-all "] [" \-\-user
+.IR name ]
+.br
+.B ghostshell tail
+.RB [ \-n
+.IR N "] [" \-f ]
+.I sessionid
+.br
+.B ghostshell tree
+.br
+.B ghostshell search
+.RB [ \-\-from
+.IR T ]
+.RB [ \-\-to
+.IR T ]
+.RB [ \-\-user
+.IR U ]
+.RB [ \-i ]
+.RB [ \-\-all ]
+.RI [ pattern ]
+.br
+.B ghostshell export
+.RB [ \-o
+.IR file ]
+.I sessionid
+.br
+.B ghostshell prune
+.RB [ \-\-yes ]
+.br
+.B ghostshell backup
+.br
+.B ghostshell ansible list
+.RB [ \-\-user
+.IR U ]
+.br
+.B ghostshell ansible show
+.RB [ \-\-user
+.IR U ]
+.I runid
+.br
+.B ghostshell init
+.RB [ \-\-reset\-password | \-\-clear\-password ]
+.br
+.B ghostshell completion bash
+.br
+.B ghostshell version
+.br
+.B ghostshell \-\-check
+.br
+.B ghostshell help
+.RI [ command ]
+.SH DESCRIPTION
+.B ghostshell
+records an interactive terminal session and replays it later.
+It launches a command (a shell by default) inside a pseudo-terminal
+(PTY), forwards your keystrokes to it, and copies everything the
+program prints to both your screen and a recording file. The recording
+can then be replayed with original timing.
+.PP
+It is a single self-contained binary, comparable to
+.BR script (1)
+or
+.BR asciinema (1),
+and writes the widely supported
+.B asciinema v2
+"cast" format, so recordings also play with
+.B asciinema play
+when that tool is installed.
+.PP
+.B ghostshell
+records terminal
+.I output
+only; it does not store your keystrokes. With the optional
+.B ghostshell-daemon
+daemon and login hook (installed by the packages), sessions from all users are
+collected into a root-only central store for audit (see
+.BR "AUDIT COMMANDS" ).
+.SH COMMANDS
+.TP
+.B rec \fR(alias: \fBrecord\fR)
+Record a session. Runs
+.I command
+under a PTY; with no
+.IR command ,
+runs the user's login shell (see
+.BR ENVIRONMENT ).
+Recording stops when the command exits (type
+.B exit
+or press Ctrl-D in a shell). The output file path is printed on exit.
+.TP
+.B play
+Replay a recorded
+.I file
+to the current terminal, reproducing the original inter-event timing.
+.TP
+.B ls \fR(alias: \fBlist\fR)
+List recordings in the store directory, showing file name, start time,
+and the recorded command.
+.TP
+.BI "help " "[command]"
+With no argument, print a short usage summary (same as
+.BR \-h ", " \-\-help ).
+With a command name, print that command's detailed help. Equivalently,
+.BI "ghostshell " "command"
+.B \-\-help
+(or
+.BR help )
+shows the command's help.
+.SH OPTIONS
+.SS rec options
+.TP
+.BI \-o " file"
+Write the recording to
+.IR file .
+By default a file is auto-named in the store directory (see
+.BR FILES ).
+Implies local recording (bypasses the daemon).
+.TP
+.B \-q
+Quiet: suppress the recording banner and the saved-path message. Also enabled
+by setting
+.BR GHOSTSHELL_QUIET=1 .
+.SS play options
+.TP
+.BI \-\-speed " N"
+Playback speed multiplier. Default
+.BR 1.0 .
+Values above 1 play faster (e.g.
+.B 2.0
+is twice as fast); values below 1 play slower. Must be greater than 0.
+.TP
+.BI \-\-idle " N"
+Cap idle gaps between events to at most
+.I N
+seconds. Default
+.B 0
+means
+.B exact original timing
+\(em idle/wait periods are reproduced in full, so playback is a faithful
+real-time replay (like a video). Set
+.I N
+> 0 to compress long pauses for quick review.
+.SS Interactive replay controls
+When
+.B play
+or
+.B play-user
+replays to a terminal, it opens a full-screen player on the alternate screen:
+the recording renders above a persistent thin-line transport bar showing
+position, time, and speed. At the end it holds on the final frame until you
+quit. A backward seek re-renders output up to the target time. The player suits
+line-oriented recordings; a recording that was itself a full-screen TUI (vim,
+htop) may briefly fight the bar. When output is piped or redirected, playback
+runs straight through and
+.B \-\-idle
+applies; in the player
+.B \-\-idle
+is ignored \(em use seek instead.
+.TP
+.B space
+Pause or resume.
+.TP
+.BR "\(-> " "/ " l
+Seek forward 5 seconds.
+.TP
+.BR "\(<- " "/ " h
+Seek backward 5 seconds.
+.TP
+.BR "\(ua " "/ " +
+Double the playback speed (up to 64x).
+.TP
+.BR "\(da " "/ " \-
+Halve the playback speed (down to 1/64x).
+.TP
+.B g
+Jump to a recorded command: opens a list of commands detected in the session
+(by their shell prompts) with timestamps; select one and press Enter to jump.
+Press
+.B t
+to type a time
+.RB ( MM:SS
+or seconds) instead, or
+.B q
+to go back. If no commands are detected, opens the type-a-time prompt directly.
+.TP
+.B "mouse click"
+Click the status bar to seek to that point. Shift+click to select text instead
+(mouse reporting otherwise captures the click).
+.TP
+.B b
+Hide or show the transport bar. Hiding releases the reserved bottom row so the
+recording plays full-height \(em useful for recordings that draw their own
+progress bar (e.g.
+.BR apt / dpkg ).
+.TP
+.B 0
+Restart from the beginning.
+.TP
+.BR q " / " Ctrl-C
+Quit.
+.SH AUDIT COMMANDS
+When the
+.B ghostshell-daemon
+daemon is installed (it runs as root and collects all users' sessions into
+the root-only central store
+.IR /var/lib/ghostshell ),
+these commands review and watch recordings. They require root, since the
+central store is readable only by root.
+.TP
+.B "ls \-\-all"
+List all users that have recordings in the central store and their session
+counts.
+.TP
+.B "ls \-\-user \fIname\fR"
+List one user's sessions in the central store.
+.RB ( ls\-user
+is a hidden backward-compatible alias.)
+.TP
+.BI "play " sessionid
+Replay a central session by id, searched across all users in the central store.
+Accepts
+.B \-\-speed
+and
+.BR \-\-idle .
+A target that is not an existing local file is auto-detected as a central
+session id.
+.RB ( play\-user
+is a hidden backward-compatible alias.)
+.TP
+.BI "tail \fR[\fB\-n\fR " "N\fR] " sessionid
+Print the last
+.I N
+output lines of a session (default 20).
+.TP
+.BI "tail \-f " sessionid
+Live-stream an in-progress session from the daemon as it is recorded.
+.TP
+.B tree
+Print a tree of users and their sessions.
+.TP
+.BI "search " "[\-\-from T] [\-\-to T] [\-\-user U] [\-i] pattern"
+Search all recordings for
+.IR pattern ,
+matching the recorded command and terminal output. Print each matching session
+with a few snippet lines.
+.B \-\-from
+and
+.B \-\-to
+limit to sessions started in a time range
+.RI ( YYYY-MM-DD [
+.IR "HH:MM" "] or RFC3339);"
+.B \-\-user
+limits to one user;
+.B \-i
+is case-insensitive;
+.B \-\-all
+lists every session (no pattern needed).
+.TP
+.BI "export " "[\-o file] [\-\-force] sessionid"
+Decrypt a central recording to a plaintext asciinema v2 cast (stdout, or
+.IR file
+with
+.BR \-o )
+for offline use or
+.BR "asciinema play" .
+With
+.BR \-o ,
+ghostshell refuses to overwrite an existing file unless
+.B \-\-force
+is given.
+.TP
+.B prune \fR[\fB\-\-yes\fR]
+Interactively delete recordings from the central store. First prints a storage
+overview (users, session counts, sizes, total) and requires the prune password
+(set on first use, e.g. just after install). Then prompts for the user scope
+(all or one user) and the selection (\fBall\fR, \fBdays\fR N for sessions older
+than N days, or \fBrange\fR FROM TO), previews matching sessions, and asks for
+confirmation. In-progress (active) recordings are never pruned.
+.B \-\-yes
+skips the final confirmation.
+.TP
+.B backup
+Immediately run the configured backup of the central store. Honors the same
+.B backup_type
+and
+.B backup_target
+settings the daemon uses for periodic backups
+.RB ( bucket_aws ", " bucket_gcp ", or " rsync ).
+.TP
+.B "ansible list \fR[\fB\-\-user\fR \fIU\fR]"
+List Ansible playbook runs from the central store. With no
+.BR \-\-user ,
+scans all users. Columns: RUN, PLAYBOOK, CONTROLLER, OK, CHG, FAIL, STARTED, HOSTS.
+.TP
+.B "ansible show \fR[\fB\-\-user\fR \fIU\fR] \fIrunid\fR"
+Show full detail for a playbook run: plays, per-task status (ok/changed/failed/
+unreachable/skipped), output for failed or changed tasks, and the PLAY RECAP per host.
+.PP
+.SS Ansible tracking
+.PP
+Install the callback plugin on the
+.B controller
+host (the machine running
+.BR ansible-playbook ):
+.PP
+.RS
+.EX
+export ANSIBLE_CALLBACK_PLUGINS=/usr/share/ghostshell/ansible
+export ANSIBLE_CALLBACKS_ENABLED=ghostshell
+ansible-playbook site.yml
+.EE
+.RE
+.PP
+Or add to
+.IR ansible.cfg :
+.PP
+.RS
+.EX
+[defaults]
+callback_plugins  = /usr/share/ghostshell/ansible
+callbacks_enabled = ghostshell
+.EE
+.RE
+.PP
+The plugin spawns
+.B ghostshell ansible-ingest
+as a subprocess, which streams JSON-lines events to ghostshell-daemon via
+.IR /run/ghostshell-daemon.sock .
+If ghostshell-daemon is unreachable the run is saved locally to
+.IR ~/.local/share/ghostshell/ansible/<runid>.ajsonl
+(fail-open; playbook never aborted). Runs stored in the central store are
+encrypted at rest with the same AES-256-GCM key used for terminal recordings.
+.PP
+Limitation: only controllers with ghostshell installed produce Ansible records.
+Managed hosts still receive raw Ansible SSH execs (captured by the sshd
+ForceCommand wrapper, if configured), but those carry no task name or status.
+.PP
+Central recordings are encrypted at rest (AES-256-GCM); on disk a
+.I .cast
+is opaque to
+.BR cat / strings / grep .
+The audit commands decrypt transparently using the key at
+.IR /var/lib/ghostshell/.ghostshell.key .
+.PP
+When
+.B ghostshell-daemon
+is running,
+.B ghostshell rec
+streams to it over
+.I /run/ghostshell-daemon.sock
+and recordings are stored centrally (root-owned). If the daemon is down,
+.B ghostshell rec
+falls back to the user-local directory and the daemon ingests those files on
+its next startup.
+.SH OTHER COMMANDS
+.TP
+.B "init \fR[\fB\-\-reset\-password\fR|\fB\-\-clear\-password\fR]"
+Run the first-time setup wizard (checks config, daemon reachability, encryption
+key, and playback-password status).
+.B \-\-reset\-password
+changes the optional playback password and
+.B \-\-clear\-password
+removes it; both require the current password first. When a playback password
+is set, the read commands
+.RB ( play ", " tail ", " tree ", " search ", " export ", " "ls \-\-all" / \-\-user )
+prompt for it. The hash is stored in
+.I /etc/ghostshell/.playback_passwd
+.RB ( root:root " 0600)."
+.TP
+.B "completion bash"
+Print the bash completion script (install to
+.IR /usr/share/bash-completion/completions/ghostshell ).
+.TP
+.B version
+Print the program version.
+.RB ( \-V " and " \-\-version " are equivalent.)"
+.TP
+.B \-\-check
+Validate
+.I /etc/ghostshell/ghostshell.conf
+and print all resolved configuration values. Exits 0 on success, 1 on error
+(mirrors
+.BR "nginx \-t" ).
+.SH ENVIRONMENT
+.TP
+.B GHOSTSHELL_DIR
+User-local recordings directory. If unset, defaults to
+.IR ~/.local/share/ghostshell .
+.TP
+.B GHOSTSHELL_CENTRAL_DIR
+Central root-only store read by the audit commands and written by
+.BR ghostshell-daemon .
+If unset, defaults to
+.IR /var/lib/ghostshell .
+.TP
+.B GHOSTSHELL_DAEMON_SOCK
+Daemon socket path used by
+.B ghostshell rec
+and the audit commands. If unset, defaults to
+.IR /run/ghostshell-daemon.sock .
+.TP
+.B GHOSTSHELL_QUIET
+If set to a non-empty value,
+.B ghostshell rec
+suppresses its banner and saved-path message.
+.TP
+.B SHELL
+Shell launched by
+.B ghostshell rec
+when no
+.I command
+is given. If unset,
+.I /bin/bash
+is used.
+.TP
+.B TERM
+Recorded in the cast header so players can reproduce terminal behavior.
+.SH FILES
+.TP
+.I ~/.local/share/ghostshell/
+Default store directory (overridden by
+.BR GHOSTSHELL_DIR ).
+.TP
+.I <store>/<YYYYMMDDThhmmss>-<pid>.cast
+Auto-named recording. The timestamp is the session start time; the pid
+is the recorder's process id.
+.TP
+.I /etc/ghostshell/ghostshell.conf
+Runtime configuration file. All keys are optional; built-in defaults apply when absent.
+Override path with
+.B GHOSTSHELL_CONFIG
+env var. See
+.B CONFIGURATION
+section or
+.I /usr/share/ghostshell/ghostshell.conf.example
+for available keys.
+.SH CONFIGURATION
+.B /etc/ghostshell/ghostshell.conf
+is a simple key=value file (# comments, blank lines allowed).
+Available keys and defaults:
+.TP
+.B socket_path
+Unix socket path for ghostshell-daemon (default: /run/ghostshell-daemon.sock). Env: GHOSTSHELL_DAEMON_SOCK.
+.TP
+.B central_dir
+Root of the central session store (default: /var/lib/ghostshell). Env: GHOSTSHELL_CENTRAL_DIR.
+.TP
+.B key_file
+Encryption key path, relative to central_dir or absolute (default: .ghostshell.key).
+.TP
+.B dial_timeout_sec
+Seconds to wait connecting to ghostshell-daemon (default: 1). Env: GHOSTSHELL_DIAL_TIMEOUT_SEC.
+.TP
+.B eof_grace_ms
+Milliseconds before force-closing PTY on stdin EOF (default: 500). Env: GHOSTSHELL_EOF_GRACE_MS.
+.TP
+.B ansible_output_cap
+Max bytes per ansible task output (default: 8192). Env: GHOSTSHELL_ANSIBLE_OUTPUT_CAP.
+.TP
+.B scroll_buffer
+PTY read buffer size in bytes, minimum 4096 (default: 32768). Env: GHOSTSHELL_SCROLL_BUFFER.
+.TP
+.B log_level
+ghostshell-daemon log verbosity, 0 off through 5 trace (default: 3). Env: GHOSTSHELL_LOG_LEVEL.
+.TP
+.B log_file
+ghostshell-daemon logfile path; empty disables file logging (default: /var/log/ghostshell/ghostshell.log).
+Env: GHOSTSHELL_LOG_FILE.
+.TP
+.B backup_type
+Central-store backup mechanism: bucket_aws, bucket_gcp, rsync, or empty to
+disable (default: empty). Env: GHOSTSHELL_BACKUP_TYPE.
+.TP
+.B backup_target
+Backup destination, e.g. s3://bucket/prefix, gs://bucket/prefix, or
+user@host:/path. Env: GHOSTSHELL_BACKUP_TARGET.
+.TP
+.B backup_interval_sec
+Seconds between periodic daemon backups (default: 0, disabled). Env:
+GHOSTSHELL_BACKUP_INTERVAL_SEC.
+.SH FILE FORMAT
+Recordings use the asciinema v2 cast format: a UTF-8, JSON-lines text
+file.
+.PP
+The first line is a header object, for example:
+.PP
+.RS
+.EX
+{"version":2,"width":80,"height":24,"timestamp":1779776263,
+ "command":"/bin/bash","env":{"SHELL":"/bin/bash","TERM":"xterm-256color"}}
+.EE
+.RE
+.PP
+Each subsequent line is an event array
+.RB [ "time, \"o\", data" ]
+where
+.I time
+is seconds (float) since session start,
+.B "o"
+marks terminal output, and
+.I data
+is the printed text:
+.PP
+.RS
+.EX
+[0.131000, "o", "hello\\r\\n"]
+.EE
+.RE
+.PP
+Because the format is standard asciinema v2, files are also viewable
+with
+.B asciinema cat
+and playable with
+.BR "asciinema play" .
+.SH EXAMPLES
+.TP
+Record an interactive shell, then replay it:
+.EX
+.B $ ghostshell rec
+.B $ ghostshell ls
+.B $ ghostshell play ~/.local/share/ghostshell/20260526T120422-1858012.cast
+.EE
+.TP
+Record a single command:
+.EX
+.B $ ghostshell rec /bin/bash -c 'make test'
+.EE
+.TP
+Record to a named file:
+.EX
+.B $ ghostshell rec -o /tmp/deploy.cast
+.EE
+.TP
+Replay at double speed:
+.EX
+.B $ ghostshell play --speed 2 session.cast
+.EE
+.TP
+Replay with exact original pauses (no idle cap):
+.EX
+.B $ ghostshell play --idle 0 session.cast
+.EE
+.TP
+Store recordings in a custom directory:
+.EX
+.B $ GHOSTSHELL_DIR=/var/log/sessions ghostshell rec
+.B $ GHOSTSHELL_DIR=/var/log/sessions ghostshell ls
+.EE
+.TP
+Play with the standard asciinema player, if installed:
+.EX
+.B $ asciinema play session.cast
+.EE
+.SH EXIT STATUS
+.TP
+.B 0
+Success.
+.TP
+.B 1
+Runtime error (e.g.
+.B play
+given a missing or malformed file, or the recorder could not start the
+command).
+.PP
+.B ghostshell rec
+propagates the recorded command's own exit status: if the command exits
+non-zero, ghostshell exits with that same code, so scripts that wrap a command in
+.B ghostshell rec
+observe its real exit code.
+.TP
+.B 2
+Usage error (unknown subcommand or bad arguments).
+.SH LIMITATIONS
+.IP \(bu 2
+Records terminal output only; keystrokes (input) are not captured.
+.IP \(bu 2
+Records only sessions started under
+.BR "ghostshell rec" .
+The optional login hook and sshd
+.B ForceCommand
+wrapper (installed by the packages) auto-record logins and remote commands, but
+both are fail-open and can be sidestepped by a user who avoids ghostshell.
+Non-circumventable capture would require PAM- or kernel-stage hooks, which are
+not implemented.
+.IP \(bu 2
+Not tamper-proof against a malicious user: ghostshell provides root-only audit
+visibility, not an enforcement boundary. See the security model in the project
+README.
+.SH SEE ALSO
+.BR script (1),
+.BR scriptreplay (1),
+.BR asciinema (1),
+.BR ttyrec (1)
+.SH AUTHOR
+Part of the ghostshell-tracker project.

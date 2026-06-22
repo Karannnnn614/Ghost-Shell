@@ -1,0 +1,46 @@
+[Unit]
+Description=ghostshell session recording collector (root-only central store)
+Documentation=man:ghostshell(1)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/libexec/ghostshell-daemon
+Environment=GHOSTSHELL_CONFIG=/etc/ghostshell/ghostshell.conf
+# Restart on crash, but pace restarts so a daemon that dies on a bad config
+# does not spin in a tight loop. RestartSec is given explicit seconds units.
+Restart=on-failure
+RestartSec=2s
+# The daemon must run as root to own /var/lib/ghostshell and read user-local
+# spool files during startup ingest.
+User=root
+# Hardening: it only needs its socket (/run/ghostshell-daemon.sock), the central store
+# (/var/lib/ghostshell), its logfile (/var/log/ghostshell), and read+delete access to
+# each user's ~/.local/share/ghostshell spool during startup ingest.
+LogsDirectory=ghostshell
+LogsDirectoryMode=0750
+# ProtectSystem=full keeps /usr, /boot and /etc read-only; ReadWritePaths
+# re-opens the dirs the daemon writes. /run is a symlink to /var/run on most
+# distros and is not covered by ProtectSystem, but is listed for clarity so the
+# socket can be (re)created.
+ProtectSystem=full
+ReadWritePaths=/var/lib/ghostshell /var/log/ghostshell /run /var/run
+NoNewPrivileges=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX
+PrivateDevices=yes
+RestrictSUIDSGID=yes
+SystemCallArchitectures=native
+UMask=0077
+MemoryMax=512M
+TasksMax=256
+# NOTE: ProtectHome must NOT be enabled. The collector reads each user's
+# ~/.local/share/ghostshell spool and DELETES the file after ingesting it into the
+# central store. ProtectHome=read-only (or tmpfs) would make os.Remove of the
+# spool fail silently, so stray recordings would accumulate and be re-ingested
+# (duplicated) on every restart. Cross-user home access is core to this daemon.
+ProtectHome=no
+
+[Install]
+WantedBy=multi-user.target
