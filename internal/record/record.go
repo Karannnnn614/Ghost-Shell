@@ -1,3 +1,7 @@
+// Ghost Shell - terminal session recorder and audit tool for Linux.
+// Copyright (C) 2026 Karannnnn614
+// Licensed under the GNU General Public License v2.0 (see LICENSE).
+
 // Package record spawns a shell under a PTY and records its output.
 package record
 

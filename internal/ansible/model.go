@@ -1,3 +1,7 @@
+// Ghost Shell - terminal session recorder and audit tool for Linux.
+// Copyright (C) 2026 Karannnnn614
+// Licensed under the GNU General Public License v2.0 (see LICENSE).
+
 // Package ansible records and replays Ansible playbook runs from the ghostshell
 // central store. The controller-side Python callback plugin writes JSON-lines
 // events via `ghostshell ansible-ingest`, which streams them to ghostshell-daemon over the

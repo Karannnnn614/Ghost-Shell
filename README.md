@@ -669,7 +669,13 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full guide (bug reports, PR workf
   <img src="https://contrib.rocks/image?repo=Karannnnn614/Ghost-Shell" />
 </a>
 
+## Author
+
+Ghost Shell is created and maintained by [Karannnnn614](https://github.com/Karannnnn614).
+
 ## License
+
+Copyright © 2026 Karannnnn614.
 
 Licensed under the GNU General Public License v2.0. See [LICENSE](LICENSE).
 

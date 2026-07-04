@@ -1,3 +1,7 @@
+// Ghost Shell - terminal session recorder and audit tool for Linux.
+// Copyright (C) 2026 Karannnnn614
+// Licensed under the GNU General Public License v2.0 (see LICENSE).
+
 // Package config loads ghostshell runtime configuration from /etc/ghostshell/ghostshell.conf
 // (overridable by GHOSTSHELL_CONFIG env var). All keys have safe built-in defaults
 // so the file is optional. Environment variables always override file values.

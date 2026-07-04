@@ -1,3 +1,7 @@
+// Ghost Shell - terminal session recorder and audit tool for Linux.
+// Copyright (C) 2026 Karannnnn614
+// Licensed under the GNU General Public License v2.0 (see LICENSE).
+
 // Package crypto provides at-rest encryption for cast files: a framed
 // AES-256-GCM stream so a recording on disk is opaque to cat/strings/grep and
 // is readable only with the key.

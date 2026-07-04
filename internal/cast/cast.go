@@ -1,3 +1,7 @@
+// Ghost Shell - terminal session recorder and audit tool for Linux.
+// Copyright (C) 2026 Karannnnn614
+// Licensed under the GNU General Public License v2.0 (see LICENSE).
+
 // Package cast reads and writes the asciinema v2 cast format.
 //
 // A cast file is JSON-lines: the first line is a header object, and each

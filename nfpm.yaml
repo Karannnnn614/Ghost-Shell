@@ -4,13 +4,13 @@ platform: linux
 version: ${GHOSTSHELL_VERSION}
 section: utils
 priority: optional
-maintainer: Ghost Shell maintainers <noreply@example.com>
+maintainer: Karannnnn614 <https://github.com/Karannnnn614>
 description: |
   Record and replay Linux terminal sessions.
   ghostshell runs a shell under a PTY and captures its output as asciinema v2
   cast files. The ghostshell-daemon root daemon collects sessions from all users into
   a root-only central store (/var/lib/ghostshell) for audit, with live tail.
-vendor: Ghost Shell
+vendor: Karannnnn614
 homepage: https://github.com/Karannnnn614/Ghost-Shell
 license: GPL-2.0
 

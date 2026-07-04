@@ -61,3 +61,5 @@ go test ./...
 
 By contributing you agree your contributions are licensed under the project's
 GPL-2.0 license. See [LICENSE](LICENSE).
+
+Ghost Shell is maintained by [Karannnnn614](https://github.com/Karannnnn614).

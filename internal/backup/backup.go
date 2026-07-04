@@ -1,3 +1,7 @@
+// Ghost Shell - terminal session recorder and audit tool for Linux.
+// Copyright (C) 2026 Karannnnn614
+// Licensed under the GNU General Public License v2.0 (see LICENSE).
+
 // Package backup runs periodic and on-demand backups of the central recording
 // store to a remote target. All transfer is delegated to an external command
 // (aws, gsutil, rsync) — no new SDK dependencies are introduced.

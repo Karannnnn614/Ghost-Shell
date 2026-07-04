@@ -1,3 +1,7 @@
+// Ghost Shell - terminal session recorder and audit tool for Linux.
+// Copyright (C) 2026 Karannnnn614
+// Licensed under the GNU General Public License v2.0 (see LICENSE).
+
 // Package daemon implements ghostshell-daemon: the root collector that receives session
 // recordings from per-user `ghostshell rec` clients, stores them in the central
 // root-only store, and fans out live sessions to root tailers.
