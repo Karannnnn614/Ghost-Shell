@@ -7,32 +7,32 @@
 
 ## From a released package
 
-Every push to `main` publishes an `rpm`, a `deb`, and a static binary on the [releases page](https://github.com/karan/ghostshell-tracker/releases).
+Every push to `main` publishes an `rpm`, a `deb`, and a static binary on the [releases page](https://github.com/Karannnnn614/Ghost-Shell/releases).
 
 ### Debian / Ubuntu (.deb)
 
 ```bash
-VER=$(curl -fsSL https://api.github.com/repos/karan/ghostshell-tracker/releases/latest \
+VER=$(curl -fsSL https://api.github.com/repos/Karannnnn614/Ghost-Shell/releases/latest \
   | grep -oP '"tag_name":\s*"v\K[^"]+')
-curl -fLO "https://github.com/karan/ghostshell-tracker/releases/download/v${VER}/ghostshell_${VER}_amd64.deb"
+curl -fLO "https://github.com/Karannnnn614/Ghost-Shell/releases/download/v${VER}/ghostshell_${VER}_amd64.deb"
 sudo apt install "./ghostshell_${VER}_amd64.deb"
 ```
 
 ### RHEL / Rocky / Fedora (.rpm)
 
 ```bash
-VER=$(curl -fsSL https://api.github.com/repos/karan/ghostshell-tracker/releases/latest \
+VER=$(curl -fsSL https://api.github.com/repos/Karannnnn614/Ghost-Shell/releases/latest \
   | grep -oP '"tag_name":\s*"v\K[^"]+')
-curl -fLO "https://github.com/karan/ghostshell-tracker/releases/download/v${VER}/ghostshell-${VER}-1.x86_64.rpm"
+curl -fLO "https://github.com/Karannnnn614/Ghost-Shell/releases/download/v${VER}/ghostshell-${VER}-1.x86_64.rpm"
 sudo dnf install "./ghostshell-${VER}-1.x86_64.rpm"
 ```
 
 ### Static binary (any distro)
 
 ```bash
-VER=$(curl -fsSL https://api.github.com/repos/karan/ghostshell-tracker/releases/latest \
+VER=$(curl -fsSL https://api.github.com/repos/Karannnnn614/Ghost-Shell/releases/latest \
   | grep -oP '"tag_name":\s*"v\K[^"]+')
-curl -fL -o ghostshell "https://github.com/karan/ghostshell-tracker/releases/download/v${VER}/ghostshell-${VER}-linux-amd64"
+curl -fL -o ghostshell "https://github.com/Karannnnn614/Ghost-Shell/releases/download/v${VER}/ghostshell-${VER}-linux-amd64"
 chmod +x ghostshell && sudo install -m755 ghostshell /usr/bin/ghostshell
 ```
 
@@ -80,8 +80,8 @@ man ghostshell   # opens the man page
 ## From source
 
 ```bash
-git clone https://github.com/karan/ghostshell-tracker.git
-cd ghostshell-tracker
+git clone https://github.com/Karannnnn614/Ghost-Shell.git
+cd Ghost Shell
 make build           # produces build/ghostshell and build/ghostshell-daemon
 sudo make install    # installs to /usr/bin, /usr/libexec, systemd, completion, man
 ```

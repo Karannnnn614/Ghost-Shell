@@ -5,7 +5,7 @@ feature ideas, and pull requests are all welcome.
 
 ## Report a bug or request an enhancement
 
-Open an issue: <https://github.com/karan/ghostshell-tracker/issues>
+Open an issue: <https://github.com/Karannnnn614/Ghost-Shell/issues>
 
 - **Bug:** include your distro, ghostshell version (`ghostshell --help` / release tag), the
   exact command, what you expected, and what happened. Logs help:

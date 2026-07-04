@@ -3,8 +3,8 @@
 ## Build
 
 ```bash
-git clone https://github.com/karan/ghostshell-tracker.git
-cd ghostshell-tracker
+git clone https://github.com/Karannnnn614/Ghost-Shell.git
+cd Ghost Shell
 make build
 ```
 
@@ -110,4 +110,4 @@ Auth via `SO_PEERCRED` (Linux peer credentials). The UID from the credentials de
 3. Add or update tests for any changed behavior. Run with `-race`.
 4. Open a pull request; describe what and why (the diff shows how).
 
-See [CONTRIBUTING.md](https://github.com/karan/ghostshell-tracker/blob/main/CONTRIBUTING.md) for the full guide.
+See [CONTRIBUTING.md](https://github.com/Karannnnn614/Ghost-Shell/blob/main/CONTRIBUTING.md) for the full guide.

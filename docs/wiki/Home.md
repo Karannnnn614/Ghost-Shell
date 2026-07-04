@@ -33,6 +33,6 @@ Single static Go binary. No runtime dependencies.
 
 ## Links
 
-- [GitHub repository](https://github.com/karan/ghostshell-tracker)
-- [Latest release](https://github.com/karan/ghostshell-tracker/releases/latest)
-- [Issue tracker](https://github.com/karan/ghostshell-tracker/issues)
+- [GitHub repository](https://github.com/Karannnnn614/Ghost-Shell)
+- [Latest release](https://github.com/Karannnnn614/Ghost-Shell/releases/latest)
+- [Issue tracker](https://github.com/Karannnnn614/Ghost-Shell/issues)

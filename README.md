@@ -4,10 +4,10 @@
 
 Terminal session recorder and audit tool for Linux — captures every shell session, encrypts it at rest, and lets operators replay, search, and live-tail from a root-only central store.
 
-[![Build](https://img.shields.io/github/actions/workflow/status/karan/ghostshell-tracker/pipeline.yml?style=for-the-badge)](https://github.com/karan/ghostshell-tracker/actions)
-[![Release](https://img.shields.io/github/v/release/karan/ghostshell-tracker?style=for-the-badge)](https://github.com/karan/ghostshell-tracker/releases)
-[![License](https://img.shields.io/github/license/karan/ghostshell-tracker?style=for-the-badge)](LICENSE)
-[![Stars](https://img.shields.io/github/stars/karan/ghostshell-tracker?style=for-the-badge)](https://github.com/karan/ghostshell-tracker/stargazers)
+[![Build](https://img.shields.io/github/actions/workflow/status/Karannnnn614/Ghost-Shell/pipeline.yml?style=for-the-badge)](https://github.com/Karannnnn614/Ghost-Shell/actions)
+[![Release](https://img.shields.io/github/v/release/Karannnnn614/Ghost-Shell?style=for-the-badge)](https://github.com/Karannnnn614/Ghost-Shell/releases)
+[![License](https://img.shields.io/github/license/Karannnnn614/Ghost-Shell?style=for-the-badge)](LICENSE)
+[![Stars](https://img.shields.io/github/stars/Karannnnn614/Ghost-Shell?style=for-the-badge)](https://github.com/Karannnnn614/Ghost-Shell/stargazers)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen?style=for-the-badge)](CONTRIBUTING.md)
 
 </div>
@@ -109,29 +109,29 @@ run 'ghostshell help <command>' (or 'ghostshell <command> --help') for command d
 
 ### From a released package
 
-Every push to `main` publishes an `rpm`, a `deb`, and a static binary on the [releases page](https://github.com/karan/ghostshell-tracker/releases). Download the current version directly:
+Every push to `main` publishes an `rpm`, a `deb`, and a static binary on the [releases page](https://github.com/Karannnnn614/Ghost-Shell/releases). Download the current version directly:
 
 **Debian / Ubuntu (.deb):**
 
 ```bash
-VER=$(curl -fsSL https://api.github.com/repos/karan/ghostshell-tracker/releases/latest | grep -oP '"tag_name":\s*"v\K[^"]+')
-curl -fLO "https://github.com/karan/ghostshell-tracker/releases/download/v${VER}/ghostshell_${VER}_amd64.deb"
+VER=$(curl -fsSL https://api.github.com/repos/Karannnnn614/Ghost-Shell/releases/latest | grep -oP '"tag_name":\s*"v\K[^"]+')
+curl -fLO "https://github.com/Karannnnn614/Ghost-Shell/releases/download/v${VER}/ghostshell_${VER}_amd64.deb"
 sudo apt install "./ghostshell_${VER}_amd64.deb"
 ```
 
 **RHEL / Rocky / AlmaLinux / Fedora (.rpm):**
 
 ```bash
-VER=$(curl -fsSL https://api.github.com/repos/karan/ghostshell-tracker/releases/latest | grep -oP '"tag_name":\s*"v\K[^"]+')
-curl -fLO "https://github.com/karan/ghostshell-tracker/releases/download/v${VER}/ghostshell-${VER}-1.x86_64.rpm"
+VER=$(curl -fsSL https://api.github.com/repos/Karannnnn614/Ghost-Shell/releases/latest | grep -oP '"tag_name":\s*"v\K[^"]+')
+curl -fLO "https://github.com/Karannnnn614/Ghost-Shell/releases/download/v${VER}/ghostshell-${VER}-1.x86_64.rpm"
 sudo dnf install "./ghostshell-${VER}-1.x86_64.rpm"
 ```
 
 **Static binary (any distro):**
 
 ```bash
-VER=$(curl -fsSL https://api.github.com/repos/karan/ghostshell-tracker/releases/latest | grep -oP '"tag_name":\s*"v\K[^"]+')
-curl -fL -o ghostshell "https://github.com/karan/ghostshell-tracker/releases/download/v${VER}/ghostshell-${VER}-linux-amd64"
+VER=$(curl -fsSL https://api.github.com/repos/Karannnnn614/Ghost-Shell/releases/latest | grep -oP '"tag_name":\s*"v\K[^"]+')
+curl -fL -o ghostshell "https://github.com/Karannnnn614/Ghost-Shell/releases/download/v${VER}/ghostshell-${VER}-linux-amd64"
 chmod +x ghostshell && sudo install -m755 ghostshell /usr/bin/ghostshell
 ```
 
@@ -142,8 +142,8 @@ Packages install `ghostshell` to `/usr/bin`, the `ghostshell-daemon` daemon to `
 ### From source
 
 ```bash
-git clone https://github.com/karan/ghostshell-tracker.git
-cd ghostshell-tracker
+git clone https://github.com/Karannnnn614/Ghost-Shell.git
+cd Ghost Shell
 make build          # builds bin/ghostshell and bin/ghostshell-daemon
 sudo make install   # installs binaries, man page, systemd unit, completion
 ```
@@ -654,19 +654,19 @@ Only controllers with `ghostshell` installed produce Ansible records. Managed ho
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Bug reports, PR workflow, project layout, and test instructions |
 | [man ghostshell](man/ghostshell.1) | Manual page — installed to `/usr/share/man/man1/ghostshell.1` by packages |
 | [LICENSE](LICENSE) | GNU General Public License v2.0 |
-| [Releases](https://github.com/karan/ghostshell-tracker/releases) | Pre-built `.rpm`, `.deb`, and static binaries |
+| [Releases](https://github.com/Karannnnn614/Ghost-Shell/releases) | Pre-built `.rpm`, `.deb`, and static binaries |
 
 ## Contributing
 
 ghostshell is **100% open source** and community-driven — contributions of all sizes are welcome.
 
-- **Found a bug or want a feature?** [Open an issue](https://github.com/karan/ghostshell-tracker/issues).
+- **Found a bug or want a feature?** [Open an issue](https://github.com/Karannnnn614/Ghost-Shell/issues).
 - **Want to contribute code?** Fork, branch, and open a pull request. Run `make fmt`, `make vet`, `make test`, `make build` first — CI enforces all of them.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the full guide (bug reports, PR workflow, project layout, tests).
 
-<a href="https://github.com/karan/ghostshell-tracker/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=karan/ghostshell-tracker" />
+<a href="https://github.com/Karannnnn614/Ghost-Shell/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=Karannnnn614/Ghost-Shell" />
 </a>
 
 ## License
@@ -677,6 +677,6 @@ Licensed under the GNU General Public License v2.0. See [LICENSE](LICENSE).
 
 <div align="center">
 
-[![Star History Chart](https://api.star-history.com/svg?repos=karan/ghostshell-tracker&type=Date)](https://star-history.com/#karan/ghostshell-tracker&Date)
+[![Star History Chart](https://api.star-history.com/svg?repos=Karannnnn614/Ghost-Shell&type=Date)](https://star-history.com/#Karannnnn614/Ghost-Shell&Date)
 
 </div>

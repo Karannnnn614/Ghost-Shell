@@ -184,7 +184,7 @@ pipeline {
 
                         version="${RELEASE_VERSION}"
                         target=$(git rev-parse HEAD)
-                        repo="karan/ghostshell-tracker"
+                        repo="Karannnnn614/Ghost-Shell"
                         if "$GH" release view "v${version}" --repo "$repo" >/dev/null 2>&1; then
                             echo "Release v${version} already exists"
                         else
