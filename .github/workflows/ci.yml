@@ -1,15 +1,11 @@
 name: CI
 
-# Quality gates for every push and pull request. This complements (does not
-# replace) pipeline.yml, which owns versioning and the Auto Release. Here we add
-# the static-analysis gates (staticcheck, golangci-lint) that the release
-# pipeline does not run, plus the standard gofmt/vet/test/build checks.
+# Quality gates for every push and pull request: gofmt, go vet, staticcheck,
+# golangci-lint, the full test suite, and a static build.
 
 on:
   push:
-    branches-ignore: [main]   # main is covered by pipeline.yml
   pull_request:
-    branches: [main]
   workflow_dispatch:
 
 concurrency:

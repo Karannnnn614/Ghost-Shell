@@ -4,7 +4,7 @@
 
 Terminal session recorder and audit tool for Linux — captures every shell session, encrypts it at rest, and lets operators replay, search, and live-tail from a root-only central store.
 
-[![Build](https://img.shields.io/github/actions/workflow/status/Karannnnn614/Ghost-Shell/pipeline.yml?style=for-the-badge)](https://github.com/Karannnnn614/Ghost-Shell/actions)
+[![CI](https://img.shields.io/github/actions/workflow/status/Karannnnn614/Ghost-Shell/ci.yml?style=for-the-badge)](https://github.com/Karannnnn614/Ghost-Shell/actions)
 [![Release](https://img.shields.io/github/v/release/Karannnnn614/Ghost-Shell?style=for-the-badge)](https://github.com/Karannnnn614/Ghost-Shell/releases)
 [![License](https://img.shields.io/github/license/Karannnnn614/Ghost-Shell?style=for-the-badge)](LICENSE)
 [![Stars](https://img.shields.io/github/stars/Karannnnn614/Ghost-Shell?style=for-the-badge)](https://github.com/Karannnnn614/Ghost-Shell/stargazers)
