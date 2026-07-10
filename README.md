@@ -109,7 +109,7 @@ run 'ghostshell help <command>' (or 'ghostshell <command> --help') for command d
 
 ### From a released package
 
-Every push to `main` publishes an `rpm`, a `deb`, and a static binary on the [releases page](https://github.com/Karannnnn614/Ghost-Shell/releases). Download the current version directly:
+Each `vX.Y.Z` tag publishes an `rpm`, a `deb`, and static binaries on the [releases page](https://github.com/Karannnnn614/Ghost-Shell/releases). Download the current version directly:
 
 **Debian / Ubuntu (.deb):**
 
@@ -135,7 +135,7 @@ curl -fL -o ghostshell "https://github.com/Karannnnn614/Ghost-Shell/releases/dow
 chmod +x ghostshell && sudo install -m755 ghostshell /usr/bin/ghostshell
 ```
 
-> **Note:** CI publishes a new release on every push to `main`. The commands above always fetch the latest.
+> **Note:** releases are published when a `vX.Y.Z` tag is pushed (see `.github/workflows/release.yml`). The commands above always fetch the latest.
 
 Packages install `ghostshell` to `/usr/bin`, the `ghostshell-daemon` daemon to `/usr/libexec`, a systemd unit, the bash completion, and the auto-record login hook. The post-install step creates `/var/lib/ghostshell` (root-only), creates `/var/log/ghostshell` for daemon logs, writes `/etc/ghostshell/ghostshell.conf` with all defaults visible, and enables `ghostshell-daemon`.
 

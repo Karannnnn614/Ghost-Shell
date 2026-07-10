@@ -1,0 +1,54 @@
+name: Release
+
+# Cuts a GitHub Release whenever a version tag (vX.Y.Z) is pushed. Builds the
+# static binaries, the rpm and deb packages, and SHA256SUMS, and uploads them
+# using the built-in GITHUB_TOKEN — no personal access token required.
+#
+#   git tag v0.1.0 && git push origin v0.1.0
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write   # allow the built-in token to create the release + assets
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      CGO_ENABLED: '0'
+      GOTOOLCHAIN: auto   # let `go install nfpm@latest` fetch the toolchain it needs
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+
+      - name: Version from tag
+        id: ver
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Install nfpm
+        run: go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
+
+      - name: Build binaries + rpm/deb
+        run: |
+          make VERSION="${{ steps.ver.outputs.version }}" packages
+          cp bin/ghostshell        "release/ghostshell-${{ steps.ver.outputs.version }}-linux-amd64"
+          cp bin/ghostshell-daemon "release/ghostshell-daemon-${{ steps.ver.outputs.version }}-linux-amd64"
+
+      - name: SHA256SUMS
+        run: (cd release && sha256sum * > SHA256SUMS)
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release/*
+          generate_release_notes: true
