@@ -1158,6 +1158,51 @@ func TestHandleRecStoresUnderVerifiedUID(t *testing.T) {
 	}
 }
 
+// handleRec must send a positive "OK\n" ack once the session is registered and
+// durable. The recorder waits for this ack; without it a rejection (or a wedged
+// daemon) would silently swallow the recording instead of falling back to a
+// local file. ERR rejections are already sent before this point; this proves the
+// success ack exists.
+func TestHandleRecSendsOkAck(t *testing.T) {
+	key := withTempStore(t)
+	reg := &registry{live: map[string]sessionRef{}, key: key, connCount: map[uint32]int{}, conns: map[net.Conn]struct{}{}, cap: 4}
+
+	srv, cli := unixConnPair(t)
+	done := make(chan struct{})
+	go func() {
+		handleRec(srv, newBufReader(srv), &unix.Ucred{Uid: 1000, Pid: 7777}, reg)
+		close(done)
+	}()
+
+	// The ack must arrive before we stream anything.
+	ackCh := make(chan string, 1)
+	go func() {
+		var ack [3]byte
+		if _, err := io.ReadFull(cli, ack[:]); err != nil {
+			ackCh <- "read-error: " + err.Error()
+			return
+		}
+		ackCh <- string(ack[:])
+	}()
+	select {
+	case got := <-ackCh:
+		if got != "OK\n" {
+			t.Fatalf("REC ack = %q, want %q", got, "OK\n")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("handleRec never sent an OK ack (recorder would hang / silently lose the recording)")
+	}
+
+	// Stream a little and close so handleRec returns cleanly.
+	_, _ = cli.Write([]byte("hello"))
+	_ = cli.CloseWrite()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("handleRec did not return")
+	}
+}
+
 // --- Section 2: multiple simultaneous rec sessions share one key, race-free --
 
 // Many concurrent handleRec sessions each build their own crypto writer over the

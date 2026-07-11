@@ -49,33 +49,22 @@ func (e *ExitError) Error() string {
 // reachable (central, root-only), else a user-local file (fail-open). An
 // explicit -o always uses a local file at that path.
 //
-// Hang-safety: the connect is bounded by cfg.DialTimeout, and the "REC\n"
-// handshake write is bounded by a write deadline (reusing DialTimeout). A unix
-// connect to a stale socket file left after a crash fails fast with
-// ECONNREFUSED; a daemon that accepted the connection but is wedged (never
-// reading) cannot pin the handshake write forever. On ANY dial/handshake
-// failure we fall through to the user-local file so a shell/login is never
-// blocked by daemon trouble. The deadline is cleared before returning so the
-// long-lived streaming phase is not subject to it.
-//
-// NOTE: the daemon sends no positive ACK on success (it replies only with
-// "ERR ...\n" on rejection, then reads), so openSink cannot distinguish a
-// silently-accepting daemon from one that will reject or wedge mid-stream
-// without adding latency to every successful start. The residual streaming-hang
-// / silent-rejection exposure is documented in the audit report as a design
-// trade-off requiring a daemon-side protocol change (ACK/keepalive).
+// Fail-open + hang-safety: the connect is bounded by cfg.DialTimeout, and the
+// "REC" handshake (see recHandshake) is bounded by write+read deadlines. The
+// daemon replies "OK\n" only once the session is registered; a rejection
+// (session cap, disk full, id collision) replies "ERR ...\n", and a wedged
+// daemon that accepted but never answers trips the read deadline. In ALL of
+// those cases — and on any dial failure (e.g. a stale socket → ECONNREFUSED) —
+// we fall back to the user-local file, so the recording is never silently lost
+// and a shell/login is never blocked by daemon trouble. Deadlines are cleared
+// once OK is received so the long-lived streaming phase (and a legitimately idle
+// live shell) is not bounded.
 func openSink(out string) (io.WriteCloser, string, error) {
 	if out == "" {
 		cfg := config.Load()
 		if conn, derr := net.DialTimeout("unix", cfg.SocketPath, cfg.DialTimeout); derr == nil {
-			_ = conn.SetWriteDeadline(time.Now().Add(cfg.DialTimeout))
-			if _, werr := conn.Write([]byte("REC\n")); werr == nil {
-				// Clear the handshake deadline; a stuck streaming write is a
-				// separate (flagged) concern, and a live idle shell must not be
-				// killed by a write deadline.
-				if derr := conn.SetWriteDeadline(time.Time{}); derr == nil {
-					return conn, "ghostshell-daemon (central)", nil
-				}
+			if central, ok := recHandshake(conn, cfg.DialTimeout); ok {
+				return central, "ghostshell-daemon (central)", nil
 			}
 			_ = conn.Close()
 		}
@@ -95,6 +84,42 @@ func openSink(out string) (io.WriteCloser, string, error) {
 		return nil, "", err
 	}
 	return f, path, nil
+}
+
+// recHandshake performs the "REC" handshake with the daemon and reports whether
+// the central sink is usable. It writes "REC\n" (bounded by a write deadline),
+// then waits (bounded by a read deadline) for the daemon's "OK\n" ack. Any other
+// outcome returns ok=false so the caller falls back to a user-local file:
+//   - "ERR ...\n": the daemon rejected the session (cap reached, disk full, id
+//     collision) — without this ack the recorder would stream into a doomed
+//     connection and silently lose the recording.
+//   - read timeout: the daemon accepted the connection but is wedged / not
+//     reading — without the bounded read the shell would hang mid-login.
+//   - EOF / any I/O error.
+//
+// On success both deadlines are cleared: the long-lived streaming phase must not
+// be bounded, and a legitimately idle live shell must not be killed by a
+// deadline. The ack is exactly "OK\n" (3 bytes) on success or a longer
+// "ERR ...\n" on rejection, so reading a fixed 3 bytes distinguishes them (an
+// ERR line begins "ERR"); io.ReadFull reports a short read (timeout/EOF) as an
+// error, which also routes to the local fallback.
+func recHandshake(conn net.Conn, timeout time.Duration) (net.Conn, bool) {
+	if err := conn.SetWriteDeadline(time.Now().Add(timeout)); err != nil {
+		return nil, false
+	}
+	if _, err := conn.Write([]byte("REC\n")); err != nil {
+		return nil, false
+	}
+	if err := conn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
+		return nil, false
+	}
+	var ack [3]byte
+	if _, err := io.ReadFull(conn, ack[:]); err != nil || string(ack[:2]) != "OK" {
+		return nil, false
+	}
+	_ = conn.SetWriteDeadline(time.Time{})
+	_ = conn.SetReadDeadline(time.Time{})
+	return conn, true
 }
 
 // Run records a session. args is the rec subcommand's argv (after "rec").

@@ -355,12 +355,77 @@ func TestOpenSinkFallbackSocketRefused(t *testing.T) {
 	assertLocalFallback(t, sink, dest, tmp)
 }
 
+// TestOpenSinkErrAckFallsBackLocal: the daemon ACCEPTS and replies "ERR ...\n"
+// (session rejected — cap reached, disk full, or id collision). Before the ack
+// handshake the recorder ignored the reply and streamed the whole cast into the
+// doomed connection, silently losing the recording. Now it must fall back to a
+// local 0600 file.
+func TestOpenSinkErrAckFallsBackLocal(t *testing.T) {
+	tmp := t.TempDir()
+	sock := filepath.Join(tmp, "rej.sock")
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+	go func() {
+		c, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer c.Close()
+		var rec [4]byte
+		_, _ = io.ReadFull(c, rec[:]) // consume "REC\n"
+		_, _ = c.Write([]byte("ERR too many sessions\n"))
+	}()
+	pointDaemonAt(t, sock, tmp)
+
+	sink, dest, err := openSink("")
+	if err != nil {
+		t.Fatalf("openSink: %v", err)
+	}
+	defer sink.Close()
+	assertLocalFallback(t, sink, dest, tmp)
+}
+
+// TestOpenSinkOkAckUsesCentral: the daemon replies "OK\n" (session registered),
+// so the recorder commits to the central sink (the returned conn), not local.
+func TestOpenSinkOkAckUsesCentral(t *testing.T) {
+	tmp := t.TempDir()
+	sock := filepath.Join(tmp, "ok.sock")
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+	go func() {
+		c, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		var rec [4]byte
+		_, _ = io.ReadFull(c, rec[:]) // consume "REC\n"
+		_, _ = c.Write([]byte("OK\n"))
+		_, _ = io.Copy(io.Discard, c) // drain until the recorder closes
+		_ = c.Close()
+	}()
+	pointDaemonAt(t, sock, tmp)
+
+	sink, dest, err := openSink("")
+	if err != nil {
+		t.Fatalf("openSink: %v", err)
+	}
+	defer sink.Close()
+	if !strings.Contains(dest, "central") {
+		t.Fatalf("expected central sink on OK ack, got dest %q", dest)
+	}
+}
+
 // TestOpenSinkNoHangSilentDaemon: a daemon that ACCEPTS the connection but never
-// reads (wedged/hung). The 5-byte "REC\n" handshake fits the socket send buffer
-// so it completes and openSink (correctly) treats it as central — the essential
-// property under test is that openSink RETURNS PROMPTLY and does not hang the
-// caller (a hung `ghostshell rec` would block a login via the profile.d hook).
-// The residual streaming-phase hang is a flagged design trade-off.
+// reads and never sends the "OK" ack (wedged/hung). The recorder's bounded ack
+// read trips its deadline, so it RETURNS PROMPTLY (no hung login via the
+// profile.d hook) AND falls back to a local file instead of streaming into a
+// doomed connection.
 func TestOpenSinkNoHangSilentDaemon(t *testing.T) {
 	tmp := t.TempDir()
 	sock := filepath.Join(tmp, "silent.sock")
@@ -398,13 +463,11 @@ func TestOpenSinkNoHangSilentDaemon(t *testing.T) {
 		if r.err != nil {
 			t.Fatalf("openSink returned error against an accepting daemon: %v", r.err)
 		}
+		// The ack read times out, so the recorder falls back to a local 0600 file
+		// rather than committing to the wedged central connection.
+		assertLocalFallback(t, r.sink, r.dest, tmp)
 		if r.sink != nil {
 			_ = r.sink.Close()
-		}
-		if !strings.Contains(r.dest, "central") {
-			// Acceptable: falling back to local is also non-hanging. The
-			// no-hang property is what this test guards.
-			t.Logf("openSink fell back to local (%q); no-hang property still satisfied", r.dest)
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("openSink HUNG on an accepting-but-silent daemon — would block a login")

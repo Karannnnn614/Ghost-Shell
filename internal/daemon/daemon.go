@@ -621,6 +621,11 @@ func handleRec(conn *net.UnixConn, br *bufio.Reader, cred *unix.Ucred, reg *regi
 	uname := lookupUser(cred.Uid)
 	dir := store.UserDir(uname)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
+		// Can't create the user's store dir (e.g. disk full). Log it — the
+		// recorder gets EOF before the OK ack and falls back to a local file, but
+		// the operator should still see why the central write was dropped.
+		logger.Errorf("ghostshell-daemon: cannot create store dir %s (uid=%d): %v — "+
+			"session dropped; recorder falls back to a user-local file", dir, cred.Uid, err)
 		return
 	}
 	_ = os.Chmod(dir, 0o700)
@@ -665,6 +670,18 @@ func handleRec(conn *net.UnixConn, br *bufio.Reader, cred *unix.Ucred, reg *regi
 		reg.remove(id)
 		logger.Infof("ghostshell-daemon: session closed   user=%-20s id=%s bytes=%d", uname, id, totalBytes)
 	}()
+
+	// Positive ACK: the session file is created and registered, so tell the
+	// recorder to begin streaming. The recorder blocks on this "OK\n"; if it
+	// instead receives an "ERR ..." rejection (session cap, disk full, id
+	// collision — all sent above before this point), a read timeout from a
+	// wedged daemon, or EOF, it falls back to a user-local file. That is what
+	// makes fail-open airtight: a rejected or hung daemon can never silently
+	// swallow the recording. If the recorder already vanished, the deferred
+	// close/remove above tidies up.
+	if _, werr := conn.Write([]byte("OK\n")); werr != nil {
+		return
+	}
 
 	buf := make([]byte, 32*1024)
 	for {
