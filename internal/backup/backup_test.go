@@ -7,6 +7,8 @@ package backup
 import (
 	"context"
 	"errors"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -191,6 +193,95 @@ func TestRunCLIDisabledReturnsError(t *testing.T) {
 
 	if err := RunCLI(nil); err == nil {
 		t.Fatal("expected error when backup_type is empty, got nil")
+	}
+}
+
+// TestBuildBackupArgsNoShellInterpolation proves the backup_target is passed as
+// a single, verbatim argv element and is never handed to a shell. Even a target
+// containing shell metacharacters must survive intact as one argument (Run uses
+// exec.CommandContext(name, args...) — no `sh -c`), so it cannot be split or
+// interpreted into a command injection.
+func TestBuildBackupArgsNoShellInterpolation(t *testing.T) {
+	const evil = "user@host:/backups; rm -rf / $(whoami) `id`"
+	cfg := &config.Config{
+		BackupType:   "rsync",
+		BackupTarget: evil,
+		CentralDir:   "/var/lib/ghostshell",
+	}
+	name, args, err := buildBackupArgs(cfg)
+	if err != nil {
+		t.Fatalf("buildBackupArgs: %v", err)
+	}
+	if name != "rsync" {
+		t.Errorf("name = %q, want rsync", name)
+	}
+	last := args[len(args)-1]
+	if last != evil {
+		t.Errorf("target argv element = %q; want the raw target verbatim (no shell splitting)", last)
+	}
+	// The metacharacters must not appear anywhere except as that one element.
+	for i, a := range args[:len(args)-1] {
+		if a == evil {
+			t.Errorf("target unexpectedly duplicated at arg %d", i)
+		}
+	}
+}
+
+// TestRunRsyncAgainstLocalTarget actually EXERCISES the rsync backup path end to
+// end against a real local target using the real runCommand (real rsync binary),
+// confirming the README's documented mirror-with-delete semantics:
+//   - every file in the fake central store appears at the target,
+//   - the trailing-slash source copies contents (not a nested sub-dir),
+//   - --delete removes files at the target that are not in the source.
+//
+// Skips when rsync is not installed (e.g. bare Windows host); runs in the Linux
+// CI/Docker image where rsync is available.
+func TestRunRsyncAgainstLocalTarget(t *testing.T) {
+	if _, err := exec.LookPath("rsync"); err != nil {
+		t.Skip("rsync not installed; skipping real-transfer exercise")
+	}
+
+	src := t.TempDir()
+	dst := t.TempDir()
+
+	// Fake central store: <user>/<id>.cast plus the at-rest key file.
+	userDir := filepath.Join(src, "alice")
+	if err := os.MkdirAll(userDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(userDir, "sess1.cast"), []byte("CAST-DATA-1"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, ".ghostshell.key"), []byte("KEYBYTES"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Pre-seed the destination with a stale file that --delete must remove.
+	if err := os.WriteFile(filepath.Join(dst, "stale.cast"), []byte("OLD"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &config.Config{
+		BackupType:   "rsync",
+		BackupTarget: dst, // local path target: argv only, never a shell string
+		CentralDir:   src,
+	}
+	if err := Run(context.Background(), cfg); err != nil {
+		t.Fatalf("rsync backup failed: %v", err)
+	}
+
+	got, err := os.ReadFile(filepath.Join(dst, "alice", "sess1.cast"))
+	if err != nil {
+		t.Fatalf("expected recording mirrored to target: %v", err)
+	}
+	if string(got) != "CAST-DATA-1" {
+		t.Errorf("mirrored content = %q, want CAST-DATA-1", got)
+	}
+	if _, err := os.Stat(filepath.Join(dst, ".ghostshell.key")); err != nil {
+		t.Errorf("key file not mirrored to target: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dst, "stale.cast")); !os.IsNotExist(err) {
+		t.Errorf("--delete did not remove the stale target file (err=%v)", err)
 	}
 }
 

@@ -8,12 +8,16 @@ import (
 	"bufio"
 	"encoding/json"
 	"errors"
+	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"ghostshell/internal/config"
 )
 
 // openDevNull opens /dev/null for reading and writing.
@@ -270,6 +274,147 @@ func TestMakeRawRestoreIsIdempotent(t *testing.T) {
 	// Must not panic and must remain safe across repeated calls.
 	restore()
 	restore()
+}
+
+// pointDaemonAt makes openSink's config.Load() dial sock and fall back into
+// dir, with a short dial timeout. It resets the config singleton so the env
+// takes effect, and restores it after the test.
+func pointDaemonAt(t *testing.T, sock, dir string) {
+	t.Helper()
+	t.Setenv("GHOSTSHELL_DAEMON_SOCK", sock)
+	t.Setenv("GHOSTSHELL_DIR", dir)
+	t.Setenv("GHOSTSHELL_DIAL_TIMEOUT_SEC", "1")
+	config.Reset()
+	t.Cleanup(config.Reset)
+}
+
+func assertLocalFallback(t *testing.T, sink io.WriteCloser, dest, dir string) {
+	t.Helper()
+	if strings.Contains(dest, "central") {
+		t.Fatalf("expected local fallback, got central dest %q", dest)
+	}
+	if !strings.HasPrefix(dest, dir) {
+		t.Errorf("fallback dest %q is not under local dir %q", dest, dir)
+	}
+	fi, err := os.Stat(dest)
+	if err != nil {
+		t.Fatalf("stat fallback file: %v", err)
+	}
+	if perm := fi.Mode().Perm(); perm != 0o600 {
+		t.Errorf("fallback file mode = %#o, want 0600 (captured output may hold secrets)", perm)
+	}
+	if fi.Size() != 0 {
+		t.Errorf("fresh fallback file should be empty (no partial/truncated cast), size = %d", fi.Size())
+	}
+}
+
+// TestOpenSinkFallbackDaemonUnreachable: when the daemon socket does not exist,
+// the dial fails fast (ECONNREFUSED/ENOENT within DialTimeout) and openSink
+// falls back cleanly to a fresh 0600 user-local file — no partial cast.
+func TestOpenSinkFallbackDaemonUnreachable(t *testing.T) {
+	tmp := t.TempDir()
+	pointDaemonAt(t, filepath.Join(tmp, "nope.sock"), tmp)
+
+	sink, dest, err := openSink("")
+	if err != nil {
+		t.Fatalf("openSink: %v", err)
+	}
+	defer sink.Close()
+	assertLocalFallback(t, sink, dest, tmp)
+}
+
+// TestOpenSinkFallbackSocketRefused: a socket FILE exists but nothing is
+// accepting (a stale socket left after a daemon crash). A unix connect to it
+// fails fast with ECONNREFUSED, so openSink must fall back to local rather than
+// hang or error out.
+func TestOpenSinkFallbackSocketRefused(t *testing.T) {
+	tmp := t.TempDir()
+	sock := filepath.Join(tmp, "stale.sock")
+
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	// Keep the socket file on Close so a connect finds a path with nothing
+	// accepting behind it — exactly the post-crash stale-socket case.
+	if ul, ok := ln.(*net.UnixListener); ok {
+		ul.SetUnlinkOnClose(false)
+	}
+	_ = ln.Close()
+	if _, err := os.Stat(sock); err != nil {
+		t.Fatalf("expected stale socket file to remain: %v", err)
+	}
+
+	pointDaemonAt(t, sock, tmp)
+
+	sink, dest, err := openSink("")
+	if err != nil {
+		t.Fatalf("openSink: %v", err)
+	}
+	defer sink.Close()
+	assertLocalFallback(t, sink, dest, tmp)
+}
+
+// TestOpenSinkNoHangSilentDaemon: a daemon that ACCEPTS the connection but never
+// reads (wedged/hung). The 5-byte "REC\n" handshake fits the socket send buffer
+// so it completes and openSink (correctly) treats it as central — the essential
+// property under test is that openSink RETURNS PROMPTLY and does not hang the
+// caller (a hung `ghostshell rec` would block a login via the profile.d hook).
+// The residual streaming-phase hang is a flagged design trade-off.
+func TestOpenSinkNoHangSilentDaemon(t *testing.T) {
+	tmp := t.TempDir()
+	sock := filepath.Join(tmp, "silent.sock")
+
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		c, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		accepted <- c // hold open, never read
+	}()
+
+	pointDaemonAt(t, sock, tmp)
+
+	type result struct {
+		sink io.WriteCloser
+		dest string
+		err  error
+	}
+	done := make(chan result, 1)
+	go func() {
+		s, d, e := openSink("")
+		done <- result{s, d, e}
+	}()
+
+	select {
+	case r := <-done:
+		if r.err != nil {
+			t.Fatalf("openSink returned error against an accepting daemon: %v", r.err)
+		}
+		if r.sink != nil {
+			_ = r.sink.Close()
+		}
+		if !strings.Contains(r.dest, "central") {
+			// Acceptable: falling back to local is also non-hanging. The
+			// no-hang property is what this test guards.
+			t.Logf("openSink fell back to local (%q); no-hang property still satisfied", r.dest)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("openSink HUNG on an accepting-but-silent daemon — would block a login")
+	}
+
+	select {
+	case c := <-accepted:
+		_ = c.Close()
+	default:
+	}
 }
 
 func TestSSHWrapperDoesNotNestGhostshellRec(t *testing.T) {

@@ -48,12 +48,34 @@ func (e *ExitError) Error() string {
 // openSink picks where the recording goes: stream to the root daemon when
 // reachable (central, root-only), else a user-local file (fail-open). An
 // explicit -o always uses a local file at that path.
+//
+// Hang-safety: the connect is bounded by cfg.DialTimeout, and the "REC\n"
+// handshake write is bounded by a write deadline (reusing DialTimeout). A unix
+// connect to a stale socket file left after a crash fails fast with
+// ECONNREFUSED; a daemon that accepted the connection but is wedged (never
+// reading) cannot pin the handshake write forever. On ANY dial/handshake
+// failure we fall through to the user-local file so a shell/login is never
+// blocked by daemon trouble. The deadline is cleared before returning so the
+// long-lived streaming phase is not subject to it.
+//
+// NOTE: the daemon sends no positive ACK on success (it replies only with
+// "ERR ...\n" on rejection, then reads), so openSink cannot distinguish a
+// silently-accepting daemon from one that will reject or wedge mid-stream
+// without adding latency to every successful start. The residual streaming-hang
+// / silent-rejection exposure is documented in the audit report as a design
+// trade-off requiring a daemon-side protocol change (ACK/keepalive).
 func openSink(out string) (io.WriteCloser, string, error) {
 	if out == "" {
 		cfg := config.Load()
 		if conn, derr := net.DialTimeout("unix", cfg.SocketPath, cfg.DialTimeout); derr == nil {
+			_ = conn.SetWriteDeadline(time.Now().Add(cfg.DialTimeout))
 			if _, werr := conn.Write([]byte("REC\n")); werr == nil {
-				return conn, "ghostshell-daemon (central)", nil
+				// Clear the handshake deadline; a stuck streaming write is a
+				// separate (flagged) concern, and a live idle shell must not be
+				// killed by a write deadline.
+				if derr := conn.SetWriteDeadline(time.Time{}); derr == nil {
+					return conn, "ghostshell-daemon (central)", nil
+				}
 			}
 			_ = conn.Close()
 		}

@@ -20,6 +20,7 @@ depends:
   - e2fsprogs   # provides chattr/lsattr (key is locked immutable)
 recommends:
   - bash-completion
+  - logrotate    # rotates /var/log/ghostshell/ghostshell.log via the shipped drop-in
 
 contents:
   - src: ./bin/ghostshell
@@ -93,6 +94,11 @@ contents:
       mode: 0644
   - src: scripts/ghostshell.conf.example
     dst: /etc/ghostshell/ghostshell.conf
+    type: "config|noreplace"
+    file_info:
+      mode: 0644
+  - src: ./scripts/logrotate/ghostshell
+    dst: /etc/logrotate.d/ghostshell
     type: "config|noreplace"
     file_info:
       mode: 0644

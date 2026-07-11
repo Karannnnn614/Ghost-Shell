@@ -41,6 +41,34 @@ func safeComponent(s string) bool {
 		!strings.ContainsAny(s, "/\\") && filepath.Base(s) == s
 }
 
+// SafeComponent is the exported form of safeComponent: it reports whether s is
+// safe to use as a single path component (a username, session id, or run id).
+// Callers that hand an attacker-controlled identifier to something other than a
+// path — e.g. the daemon's line-oriented socket protocol, where an embedded
+// newline would inject a second command — should gate on this too.
+func SafeComponent(s string) bool { return safeComponent(s) }
+
+// invalidComponent is the fail-closed sentinel a path builder substitutes for an
+// unsafe component. It contains a NUL byte, which every Linux syscall rejects
+// with EINVAL, so a path built from it can never be opened, stat'd, created, or
+// removed — while still being absolute and rooted inside the central store, so a
+// later filepath.Join by a caller can neither escape the store nor degrade into
+// a cwd-relative path (which a plain "" sentinel would).
+const invalidComponent = "\x00invalid"
+
+// componentOrInvalid returns s when it is a safe single path component, and the
+// fail-closed invalidComponent sentinel otherwise. It is the single choke point
+// for the exported path builders below, which are pure string functions with no
+// error return: rather than silently producing a traversal path such as
+// "<central>/alice/../../etc/passwd.cast" for a caller that forgot to validate,
+// they produce an unusable path so the subsequent open/stat fails closed.
+func componentOrInvalid(s string) string {
+	if safeComponent(s) {
+		return s
+	}
+	return invalidComponent
+}
+
 // Dir returns the user-local recordings directory.
 func Dir() string {
 	if d := os.Getenv("GHOSTSHELL_DIR"); d != "" {
@@ -230,7 +258,17 @@ func WriteFileAtomic(dir, name string, perm os.FileMode, write func(io.Writer) e
 // swapped and must not be trusted to decrypt root-readable data.
 func readDecryptKey() ([]byte, error) {
 	kp := KeyPath()
-	fi, err := os.Lstat(kp)
+	// Open O_NOFOLLOW and fstat the returned descriptor rather than Lstat-then-
+	// ReadFile: this both refuses a symlink planted at the key path (ELOOP) and
+	// closes the TOCTOU window in which the file inspected by a stat could be
+	// swapped for a different file before it is read. Every subsequent check runs
+	// against the exact inode that is then read.
+	f, err := os.OpenFile(kp, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, fmt.Errorf("cannot open decryption key %s: %w", kp, err)
+	}
+	defer f.Close()
+	fi, err := f.Stat()
 	if err != nil {
 		return nil, fmt.Errorf("cannot stat decryption key %s: %w", kp, err)
 	}
@@ -249,7 +287,7 @@ func readDecryptKey() ([]byte, error) {
 			return nil, fmt.Errorf("decryption key %s must be owned by root (uid 0), got uid %d", kp, st.Uid)
 		}
 	}
-	return os.ReadFile(kp)
+	return io.ReadAll(f)
 }
 
 // NewPath returns an auto-named cast path in the user-local dir, creating it.
@@ -621,19 +659,29 @@ const (
 )
 
 // UserDir returns a user's directory in the central store: <central>/<user>.
-func UserDir(user string) string { return filepath.Join(CentralDir(), user) }
+// An unsafe user component is replaced with a fail-closed sentinel so the result
+// can never escape the central store via traversal (see componentOrInvalid).
+func UserDir(user string) string { return filepath.Join(CentralDir(), componentOrInvalid(user)) }
 
 // CastPath returns the central path of a recording: <central>/<user>/<id>.cast.
-func CastPath(user, id string) string { return filepath.Join(CentralDir(), user, id+CastExt) }
+// Both components are validated (fail-closed) so a crafted user or id such as
+// ".." or "../../etc/passwd" cannot escape the central store.
+func CastPath(user, id string) string {
+	return filepath.Join(CentralDir(), componentOrInvalid(user), componentOrInvalid(id)+CastExt)
+}
 
 // AnsiblePath returns the central path of an ansible run log:
-// <central>/<user>/ansible/<runid>.ajsonl.
-func AnsiblePath(user, runID string) string { return filepath.Join(AnsibleDir(user), runID+AnsibleExt) }
+// <central>/<user>/ansible/<runid>.ajsonl. The run id is validated (fail-closed)
+// so a crafted id cannot escape the user's ansible dir via traversal.
+func AnsiblePath(user, runID string) string {
+	return filepath.Join(AnsibleDir(user), componentOrInvalid(runID)+AnsibleExt)
+}
 
 // AnsibleDir returns the ansible sub-directory for a given user in the
-// central store. Files are named <runid>.ajsonl and encrypted at rest.
+// central store. Files are named <runid>.ajsonl and encrypted at rest. The user
+// component is validated (fail-closed) so it cannot escape the central store.
 func AnsibleDir(user string) string {
-	return filepath.Join(CentralDir(), user, "ansible")
+	return filepath.Join(CentralDir(), componentOrInvalid(user), "ansible")
 }
 
 // AnsibleRuns returns the run ids (without .ajsonl extension) for a user,

@@ -1,0 +1,32 @@
+# ghostshell daemon log rotation — install to /etc/logrotate.d/ghostshell
+#
+# The daemon (ghostshell-daemon) writes /var/log/ghostshell/ghostshell.log
+# (root:root 0640) in addition to journald. This rotates that logfile.
+#
+# The daemon reopens its logfile on SIGHUP (see cmd/ghostshell-daemon/main.go:
+# the SIGHUP handler calls logger.Reopen). With copy-truncate-free "create"
+# rotation we therefore MUST signal the daemon after rotating, otherwise it
+# keeps writing to the renamed (old) file and the fresh logfile stays empty.
+
+/var/log/ghostshell/ghostshell.log {
+    # Rotate weekly, or sooner if the log grows large between runs.
+    weekly
+    maxsize 100M
+    rotate 8
+    compress
+    # Delay compression of the most recent rotation so the daemon's SIGHUP
+    # reopen never races logrotate compressing a file it may still hold open.
+    delaycompress
+    missingok
+    notifempty
+    # Recreate the logfile with the exact perms/owner the daemon expects.
+    create 0640 root root
+    postrotate
+        # Tell the daemon to reopen its logfile (SIGHUP -> logger.Reopen).
+        # Prefer systemd; fall back to killall. Fully non-fatal: if the daemon
+        # is stopped there is nothing to signal and rotation still succeeds.
+        systemctl kill -s HUP ghostshell-daemon.service 2>/dev/null \
+            || killall -HUP ghostshell-daemon 2>/dev/null \
+            || true
+    endscript
+}

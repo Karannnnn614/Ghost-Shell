@@ -42,23 +42,47 @@ fi
 SSHD_MAIN=/etc/ssh/sshd_config
 SSHD_CONF=/etc/ssh/sshd_config.d/zz-ghostshell.conf
 if [ -d /etc/ssh/sshd_config.d ]; then
+    # SSH recording is an OPTIONAL, fail-open feature. Everything below is
+    # best-effort: a failure here must never abort the package install (which
+    # would leave dpkg half-configured), so each mutation is guarded rather
+    # than left to `set -e`. Track exactly what THIS run changes so the
+    # validation-failure path can revert only our own edits.
+    added_include=0
+    wrote_conf=0
+
     # Ensure main sshd_config includes the drop-in directory; without this
-    # line the drop-in files are silently ignored by sshd.
+    # line the drop-in files are silently ignored by sshd. Only inject if no
+    # Include for that directory already exists (e.g. Ubuntu ships its own).
     if [ -f "$SSHD_MAIN" ] && ! grep -qE '^Include\s+/etc/ssh/sshd_config\.d/\*' "$SSHD_MAIN"; then
-        sed -i '1s|^|Include /etc/ssh/sshd_config.d/*.conf\n|' "$SSHD_MAIN"
+        if sed -i '1s|^|Include /etc/ssh/sshd_config.d/*.conf\n|' "$SSHD_MAIN" 2>/dev/null; then
+            added_include=1
+        fi
     fi
     if [ ! -f "$SSHD_CONF" ]; then
-        cat > "$SSHD_CONF" << 'SSHD_EOF'
+        if cat > "$SSHD_CONF" << 'SSHD_EOF'
 # Installed by ghostshell package. Remove this file to disable SSH session recording.
 # The wrapper is fail-open: scp/sftp/rsync pass through untouched.
 ForceCommand /usr/libexec/ghostshell-ssh-wrap
 SSHD_EOF
+        then
+            wrote_conf=1
+        fi
     fi
-    # Validate sshd config — revert if broken
+    # Validate sshd config — revert ONLY what this run added if broken.
     if ! sshd -t 2>/dev/null; then
-        # Revert Include injection if we added it
-        sed -i '/^Include \/etc\/ssh\/sshd_config\.d\/\*\.conf$/d' "$SSHD_MAIN" 2>/dev/null || true
-        rm -f "$SSHD_CONF"
+        # Remove the ForceCommand drop-in only if we created it this run —
+        # never delete a pre-existing / admin-edited file.
+        if [ "$wrote_conf" -eq 1 ]; then
+            rm -f "$SSHD_CONF"
+        fi
+        # Revert the Include line ONLY if this run added it. Deleting any
+        # matching Include unconditionally would also strip Ubuntu's own
+        # pre-existing `Include /etc/ssh/sshd_config.d/*.conf`, silently
+        # breaking every other sshd drop-in on the box when sshd -t fails for
+        # an unrelated reason.
+        if [ "$added_include" -eq 1 ]; then
+            sed -i '/^Include \/etc\/ssh\/sshd_config\.d\/\*\.conf$/d' "$SSHD_MAIN" 2>/dev/null || true
+        fi
         echo "ghostshell: WARNING: sshd config validation failed — ForceCommand not installed" >&2
         exit 0  # non-fatal: package installs but SSH recording disabled
     fi

@@ -8,7 +8,9 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"fmt"
 	"io"
+	"log"
 	"net"
 	"os"
 	"path/filepath"
@@ -25,6 +27,7 @@ import (
 
 	"ghostshell/internal/config"
 	"ghostshell/internal/crypto"
+	"ghostshell/internal/logger"
 	"ghostshell/internal/store"
 )
 
@@ -1062,5 +1065,376 @@ func TestHandleTailNonRootDoesNotTouchRegistry(t *testing.T) {
 	defer reg.mu.RUnlock()
 	if len(reg.connCount) != 0 {
 		t.Fatalf("rejected tail mutated connCount: %v", reg.connCount)
+	}
+}
+
+// captureLog redirects the leveled logger's output into a buffer for the duration
+// of fn (forcing WARN visibility) and returns whatever was logged.
+func captureLog(t *testing.T, fn func()) string {
+	t.Helper()
+	var buf bytes.Buffer
+	oldOut := log.Writer()
+	oldFlags := log.Flags()
+	prevLevel := logger.Get()
+	log.SetOutput(&buf)
+	log.SetFlags(0)
+	logger.Set(logger.LevelWarn)
+	defer func() {
+		log.SetOutput(oldOut)
+		log.SetFlags(oldFlags)
+		logger.Set(prevLevel)
+	}()
+	fn()
+	return buf.String()
+}
+
+// --- Section 2: storage keyed off the VERIFIED uid (REC) --------------------
+
+// handleRec must store a recording under the directory derived from the VERIFIED
+// peer uid (cred.Uid), never a client-supplied field. Two different creds writing
+// identical-looking sessions land in two different user dirs, and neither user's
+// bytes appear under the other's dir — proving a low-privilege caller cannot
+// submit "as" (or read into) another user's storage over the socket.
+func TestHandleRecStoresUnderVerifiedUID(t *testing.T) {
+	key := withTempStore(t)
+	reg := &registry{live: map[string]sessionRef{}, key: key, connCount: map[uint32]int{}, conns: map[net.Conn]struct{}{}, cap: 4}
+
+	rec := func(uid uint32, pid int32, payload []byte) {
+		srv, cli := unixConnPair(t)
+		done := make(chan struct{})
+		go func() {
+			handleRec(srv, newBufReader(srv), &unix.Ucred{Uid: uid, Pid: pid}, reg)
+			close(done)
+		}()
+		if _, err := cli.Write(payload); err != nil {
+			t.Fatalf("client write: %v", err)
+		}
+		_ = cli.CloseWrite()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatal("handleRec did not return")
+		}
+	}
+
+	rec(0, 4001, []byte("root-session-bytes"))
+	rec(1000, 4002, []byte("user-session-bytes"))
+
+	assertOneDecryptableCast := func(uid uint32, want []byte) {
+		uname := lookupUser(uid)
+		names, err := store.UserSessions(uname)
+		if err != nil {
+			t.Fatalf("list sessions for uid %d: %v", uid, err)
+		}
+		if len(names) != 1 {
+			t.Fatalf("uid %d: got %d casts, want exactly 1 (%v)", uid, len(names), names)
+		}
+		rc, err := store.OpenCast(filepath.Join(store.UserDir(uname), names[0]))
+		if err != nil {
+			t.Fatalf("open cast for uid %d: %v", uid, err)
+		}
+		got, _ := io.ReadAll(rc)
+		rc.Close()
+		if !bytes.Equal(got, want) {
+			t.Fatalf("uid %d cast = %q, want %q", uid, got, want)
+		}
+	}
+	assertOneDecryptableCast(0, []byte("root-session-bytes"))
+	assertOneDecryptableCast(1000, []byte("user-session-bytes"))
+
+	// Cross-check: uid 1000's bytes must NOT be readable under root's dir.
+	rootUname := lookupUser(0)
+	rootNames, _ := store.UserSessions(rootUname)
+	for _, n := range rootNames {
+		rc, err := store.OpenCast(filepath.Join(store.UserDir(rootUname), n))
+		if err != nil {
+			continue
+		}
+		b, _ := io.ReadAll(rc)
+		rc.Close()
+		if bytes.Contains(b, []byte("user-session-bytes")) {
+			t.Fatal("uid 1000's bytes leaked into root's dir — storage not keyed off the verified uid")
+		}
+	}
+}
+
+// --- Section 2: multiple simultaneous rec sessions share one key, race-free --
+
+// Many concurrent handleRec sessions each build their own crypto writer over the
+// single shared registry key (crypto.NewWriter copies the key via aes.NewCipher;
+// the key slice is only ever read). Each must produce a distinct, decryptable
+// cast. Run under -race to prove the shared-key reads and independent file writes
+// do not race.
+func TestConcurrentRecSessionsSharedKey(t *testing.T) {
+	key := withTempStore(t)
+	const n = 8
+	reg := &registry{live: map[string]sessionRef{}, key: key, connCount: map[uint32]int{}, conns: map[net.Conn]struct{}{}, cap: n}
+
+	// Build the conn pairs on the test goroutine (unixConnPair calls t.Fatalf,
+	// which must not run off the main goroutine).
+	srvs := make([]*net.UnixConn, n)
+	clis := make([]*net.UnixConn, n)
+	for i := 0; i < n; i++ {
+		srvs[i], clis[i] = unixConnPair(t)
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			payload := []byte("session-" + strconv.Itoa(i) + "-payload")
+			done := make(chan struct{})
+			go func() {
+				handleRec(srvs[i], newBufReader(srvs[i]), &unix.Ucred{Uid: 1000, Pid: int32(5000 + i)}, reg)
+				close(done)
+			}()
+			_, _ = clis[i].Write(payload)
+			_ = clis[i].CloseWrite()
+			<-done
+		}(i)
+	}
+	wg.Wait()
+
+	uname := lookupUser(1000)
+	names, err := store.UserSessions(uname)
+	if err != nil {
+		t.Fatalf("list sessions: %v", err)
+	}
+	if len(names) != n {
+		t.Fatalf("got %d casts, want %d", len(names), n)
+	}
+	seen := map[string]bool{}
+	for _, nm := range names {
+		rc, err := store.OpenCast(filepath.Join(store.UserDir(uname), nm))
+		if err != nil {
+			t.Fatalf("open %s: %v", nm, err)
+		}
+		b, _ := io.ReadAll(rc)
+		rc.Close()
+		seen[string(b)] = true
+	}
+	if len(seen) != n {
+		t.Fatalf("expected %d distinct decrypted payloads, got %d — shared-key writes collided", n, len(seen))
+	}
+}
+
+// --- Section 3: ingest edge cases ------------------------------------------
+
+// A malformed / partial cast left by a crashed recorder (a valid header then a
+// truncated event line) must ingest cleanly: copyFile does a byte-faithful,
+// non-parsing copy through the encrypter, so the central file decrypts back to
+// exactly the partial bytes (readable up to where the crash cut it off).
+func TestCopyFilePartialCastIngestsCleanly(t *testing.T) {
+	key := withTempStore(t)
+	dir := t.TempDir()
+	src := filepath.Join(dir, "20200101T000000.000000000-1.cast")
+	partial := []byte(`{"version":2,"width":80,"height":24}` + "\n" + `[0.5,"o","hel`)
+	if err := os.WriteFile(src, partial, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(dir, "out.cast")
+
+	if err := copyFile(src, dst, key); err != nil {
+		t.Fatalf("copyFile on a partial/malformed cast must not fail: %v", err)
+	}
+	rc, err := store.OpenCast(dst)
+	if err != nil {
+		t.Fatalf("open ingested cast: %v", err)
+	}
+	got, _ := io.ReadAll(rc)
+	rc.Close()
+	if !bytes.Equal(got, partial) {
+		t.Fatalf("ingested bytes = %q, want the original partial bytes %q", got, partial)
+	}
+}
+
+// Duplicate ingestion (daemon crashed after copying but before removing the
+// source, then restarted and swept the same file again) must be idempotent:
+// copyFile routes through an atomic rename that OVERWRITES, so a second ingest of
+// the same source replaces the identical-plaintext central file rather than
+// leaving a second copy or a stray temp. This is deliberately different from the
+// O_EXCL used by handleRec/handleAnsible: an O_EXCL here would fail the retry,
+// so copyFile would never return nil and ingestHome would never remove the
+// source — leaving it to be re-attempted forever.
+func TestCopyFileDoubleIngestIdempotent(t *testing.T) {
+	key := withTempStore(t)
+	dir := t.TempDir()
+	src := filepath.Join(dir, "20200101T000000.000000000-1.cast")
+	content := bytes.Repeat([]byte("recorded-data-"), 50)
+	if err := os.WriteFile(src, content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dstDir := t.TempDir()
+	dst := filepath.Join(dstDir, "20200101T000000.000000000-1.cast")
+
+	for i := 0; i < 2; i++ {
+		if err := copyFile(src, dst, key); err != nil {
+			t.Fatalf("ingest %d failed: %v", i+1, err)
+		}
+	}
+	entries, err := os.ReadDir(dstDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != filepath.Base(dst) {
+		var got []string
+		for _, e := range entries {
+			got = append(got, e.Name())
+		}
+		t.Fatalf("double ingest left %v, want exactly [%s] (no duplicate, no leftover temp)", got, filepath.Base(dst))
+	}
+	rc, err := store.OpenCast(dst)
+	if err != nil {
+		t.Fatalf("open after double ingest: %v", err)
+	}
+	got, _ := io.ReadAll(rc)
+	rc.Close()
+	if !bytes.Equal(got, content) {
+		t.Fatalf("after double ingest, cast = %q, want %q", got, content)
+	}
+}
+
+// --- Section 4: chattr immutability verification (read-back) -----------------
+
+func TestHasImmutable(t *testing.T) {
+	if hasImmutable(0) {
+		t.Error("no flags set: hasImmutable must be false")
+	}
+	if !hasImmutable(fsImmutableFL) {
+		t.Error("immutable bit set: hasImmutable must be true")
+	}
+	if !hasImmutable(fsImmutableFL | 0x1) {
+		t.Error("immutable bit set among others: hasImmutable must be true")
+	}
+	if hasImmutable(0x1 | 0x2) {
+		t.Error("other flags only: hasImmutable must be false")
+	}
+}
+
+// If the filesystem silently drops the immutable flag (SETFLAGS returns success
+// but a read-back shows the bit never stuck — the overlayfs/tmpfs/NFS case), the
+// daemon must WARN loudly instead of believing the key is protected.
+func TestSetImmutableWarnsWhenFlagDoesNotStick(t *testing.T) {
+	origGet, origSet := ioctlGetFlags, ioctlSetFlags
+	defer func() { ioctlGetFlags, ioctlSetFlags = origGet, origSet }()
+
+	ioctlGetFlags = func(int) (int, error) { return 0, nil } // never reports the bit
+	setCalled := false
+	ioctlSetFlags = func(int, int) error { setCalled = true; return nil } // "succeeds"
+
+	out := captureLog(t, func() { setImmutableFd(3, "/var/lib/ghostshell/key") })
+	if !setCalled {
+		t.Fatal("SETFLAGS was never attempted")
+	}
+	if !strings.Contains(out, "NOT protected") || !strings.Contains(out, "/var/lib/ghostshell/key") {
+		t.Fatalf("expected a prominent immutability warning naming the path, got: %q", out)
+	}
+}
+
+// A filesystem that rejects the flag ioctls outright (EOPNOTSUPP/ENOTTY) must
+// also produce the loud warning.
+func TestSetImmutableWarnsWhenGetFlagsUnsupported(t *testing.T) {
+	origGet, origSet := ioctlGetFlags, ioctlSetFlags
+	defer func() { ioctlGetFlags, ioctlSetFlags = origGet, origSet }()
+
+	ioctlGetFlags = func(int) (int, error) { return 0, unix.ENOTTY }
+	ioctlSetFlags = func(int, int) error {
+		t.Fatal("SETFLAGS must not be attempted when GETFLAGS is unsupported")
+		return nil
+	}
+
+	out := captureLog(t, func() { setImmutableFd(3, "/k") })
+	if !strings.Contains(out, "NOT protected") {
+		t.Fatalf("expected an immutability warning, got: %q", out)
+	}
+}
+
+// A permission error on SETFLAGS (missing CAP_LINUX_IMMUTABLE) must warn.
+func TestSetImmutableWarnsOnSetFlagsError(t *testing.T) {
+	origGet, origSet := ioctlGetFlags, ioctlSetFlags
+	defer func() { ioctlGetFlags, ioctlSetFlags = origGet, origSet }()
+
+	ioctlGetFlags = func(int) (int, error) { return 0, nil }
+	ioctlSetFlags = func(int, int) error { return unix.EPERM }
+
+	out := captureLog(t, func() { setImmutableFd(3, "/k") })
+	if !strings.Contains(out, "NOT protected") {
+		t.Fatalf("expected an immutability warning on EPERM, got: %q", out)
+	}
+}
+
+// When the bit genuinely sticks, there must be NO warning.
+func TestSetImmutableSilentWhenFlagSticks(t *testing.T) {
+	origGet, origSet := ioctlGetFlags, ioctlSetFlags
+	defer func() { ioctlGetFlags, ioctlSetFlags = origGet, origSet }()
+
+	var cur int
+	ioctlGetFlags = func(int) (int, error) { return cur, nil }
+	ioctlSetFlags = func(_ int, flags int) error { cur = flags; return nil }
+
+	out := captureLog(t, func() { setImmutableFd(3, "/k") })
+	if strings.Contains(out, "WARNING") || strings.Contains(out, "NOT protected") {
+		t.Fatalf("no warning expected when the immutable bit sticks, got: %q", out)
+	}
+}
+
+// Already-immutable keys are a no-op (idempotent) and never attempt SETFLAGS.
+func TestSetImmutableNoopWhenAlreadyImmutable(t *testing.T) {
+	origGet, origSet := ioctlGetFlags, ioctlSetFlags
+	defer func() { ioctlGetFlags, ioctlSetFlags = origGet, origSet }()
+
+	ioctlGetFlags = func(int) (int, error) { return fsImmutableFL, nil }
+	ioctlSetFlags = func(int, int) error { t.Fatal("SETFLAGS must not run when already immutable"); return nil }
+
+	out := captureLog(t, func() { setImmutableFd(3, "/k") })
+	if strings.Contains(out, "WARNING") {
+		t.Fatalf("no warning expected for an already-immutable key, got: %q", out)
+	}
+}
+
+// --- Section 5: disk-full (ENOSPC) is surfaced, not swallowed ----------------
+
+func TestIsNoSpace(t *testing.T) {
+	if !isNoSpace(unix.ENOSPC) {
+		t.Error("bare ENOSPC not detected")
+	}
+	if !isNoSpace(fmt.Errorf("write %s: %w", "/x", unix.ENOSPC)) {
+		t.Error("wrapped ENOSPC not detected")
+	}
+	if isNoSpace(fmt.Errorf("some other error")) {
+		t.Error("non-ENOSPC error misdetected as disk-full")
+	}
+	if isNoSpace(nil) {
+		t.Error("nil misdetected as disk-full")
+	}
+}
+
+// errWriter fails every Write with a fixed error, standing in for a full disk.
+type errWriter struct{ err error }
+
+func (e errWriter) Write(p []byte) (int, error) { return 0, e.err }
+
+// A disk write failure (e.g. ENOSPC) inside session.write must be surfaced to the
+// caller (handleRec logs it and terminates the session), not swallowed, and must
+// not advance the durable-bytes counter. The session must still close cleanly.
+func TestSessionWriteSurfacesDiskError(t *testing.T) {
+	s := &session{enc: errWriter{err: fmt.Errorf("encrypt frame: %w", unix.ENOSPC)}, subs: map[net.Conn]*subscriber{}}
+
+	err := s.write([]byte("captured audit bytes"))
+	if err == nil {
+		t.Fatal("session.write must surface the underlying disk write error, not swallow it")
+	}
+	if !isNoSpace(err) {
+		t.Fatalf("expected the error to wrap ENOSPC (so handleRec can log a disk-full line), got %v", err)
+	}
+	s.mu.Lock()
+	db := s.diskBytes
+	s.mu.Unlock()
+	if db != 0 {
+		t.Fatalf("diskBytes advanced despite the failed write: %d — a truncated frame would be counted as durable", db)
+	}
+	if cerr := s.close(); cerr != nil {
+		t.Fatalf("session must close cleanly after a failed write: %v", cerr)
 	}
 }

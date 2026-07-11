@@ -35,6 +35,31 @@ SystemCallArchitectures=native
 UMask=0077
 MemoryMax=512M
 TasksMax=256
+# --- Additional hardening (all verified safe for this daemon) -----------------
+# The daemon: opens a unix socket, reads /etc/passwd + user home spools, writes
+# 0600 recordings, and sets the key immutable via ioctl(FS_IOC_SETFLAGS)
+# (chattr +i). None of the directives below touch those operations.
+#
+# No kernel-module load/unload — deny it.
+ProtectKernelModules=yes
+# Never reads the kernel ring buffer (/dev/kmsg, syslog(2)).
+ProtectKernelLogs=yes
+# Never calls personality(2); lock the execution domain.
+LockPersonality=yes
+# Never uses realtime scheduling.
+RestrictRealtime=yes
+# Never creates namespaces (nor do the aws/gsutil/rsync backup children).
+RestrictNamespaces=yes
+# Never sets the system clock (settimeofday/adjtimex/clock_settime).
+ProtectClock=yes
+# Never sets the hostname/domainname.
+ProtectHostname=yes
+# Syscall allow-list. @system-service is the recommended baseline for a normal
+# service: it PERMITS ioctl (so chattr +i / FS_IOC_SETFLAGS still works), execve
+# (so backup subprocesses still spawn), and file/socket I/O, while denying
+# @mount/@reboot/@module/@swap/@obsolete/@raw-io/@privileged. Requires
+# SystemCallArchitectures=native (set above) to be effective.
+SystemCallFilter=@system-service
 # NOTE: ProtectHome must NOT be enabled. The collector reads each user's
 # ~/.local/share/ghostshell spool and DELETES the file after ingesting it into the
 # central store. ProtectHome=read-only (or tmpfs) would make os.Remove of the

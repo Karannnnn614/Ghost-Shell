@@ -81,6 +81,11 @@ func isFDExhaustion(err error) bool {
 	return errors.Is(err, unix.EMFILE) || errors.Is(err, unix.ENFILE)
 }
 
+// isNoSpace reports whether err is (or wraps) ENOSPC — the volume backing the
+// central store is full. Callers surface this loudly: for an audit tool a
+// swallowed write failure means silently lost recordings.
+func isNoSpace(err error) bool { return errors.Is(err, unix.ENOSPC) }
+
 // subscriber is a single live tailer. Its conn is written to by a dedicated
 // drain goroutine reading from ch, so a slow/stuck conn never blocks the
 // recorder or other tailers (the fan-out is decoupled from the disk write).
@@ -667,7 +672,19 @@ func handleRec(conn *net.UnixConn, br *bufio.Reader, cred *unix.Ucred, reg *regi
 		if n > 0 {
 			totalBytes += int64(n)
 			if err := sess.write(buf[:n]); err != nil {
-				logger.Warnf("ghostshell-daemon: write %s (uid=%d): %v — session truncated", path, cred.Uid, err)
+				// A write failure loses captured bytes — log at ERROR (visible at the
+				// default level) and terminate the session cleanly (the deferred
+				// sess.close() below syncs/closes what was written). Call out ENOSPC
+				// specifically so the operator gets an actionable disk-full signal
+				// rather than a generic errno buried in a WARN line.
+				if isNoSpace(err) {
+					logger.Errorf("ghostshell-daemon: DISK FULL writing session %s (uid=%d): %v — "+
+						"no space left on the volume backing %s; session terminated (recording truncated). "+
+						"Free space or prune the central store.", path, cred.Uid, err, store.CentralDir())
+				} else {
+					logger.Errorf("ghostshell-daemon: write error on session %s (uid=%d): %v — "+
+						"session terminated (recording truncated)", path, cred.Uid, err)
+				}
 				return
 			}
 		}
@@ -765,8 +782,17 @@ func handleAnsible(conn *net.UnixConn, br *bufio.Reader, runID string, cred *uni
 	syncErr := f.Sync()
 	closeErr := f.Close()
 	if writeErr != nil || syncErr != nil || closeErr != nil {
-		logger.Warnf("ghostshell-daemon: ansible run NOT fully stored user=%-20s run=%s bytes=%d (write=%v sync=%v close=%v)",
-			uname, runID, ansibleBytes, writeErr, syncErr, closeErr)
+		// ENOSPC can surface either at Write or at the deferred Sync (delayed
+		// allocation), so check all three errors for a disk-full cause and give
+		// the operator an actionable line instead of a bare errno.
+		if isNoSpace(writeErr) || isNoSpace(syncErr) || isNoSpace(closeErr) {
+			logger.Errorf("ghostshell-daemon: DISK FULL storing ansible run user=%-20s run=%s bytes=%d — "+
+				"no space left on the volume backing %s; run NOT stored (write=%v sync=%v close=%v). "+
+				"Free space or prune the central store.", uname, runID, ansibleBytes, store.CentralDir(), writeErr, syncErr, closeErr)
+		} else {
+			logger.Warnf("ghostshell-daemon: ansible run NOT fully stored user=%-20s run=%s bytes=%d (write=%v sync=%v close=%v)",
+				uname, runID, ansibleBytes, writeErr, syncErr, closeErr)
+		}
 		return
 	}
 	logger.Infof("ghostshell-daemon: ansible run stored  user=%-20s run=%s bytes=%d", uname, runID, ansibleBytes)
@@ -841,24 +867,73 @@ func ensureKey() ([]byte, error) {
 	return key, nil
 }
 
+// fsImmutableFL is FS_IMMUTABLE_FL, the stable kernel ABI bit set by `chattr +i`.
+const fsImmutableFL = 0x00000010
+
+// hasImmutable reports whether the FS_IMMUTABLE_FL bit is set in a flags word
+// returned by FS_IOC_GETFLAGS. Pure so the verification logic is unit-testable.
+func hasImmutable(flags int) bool { return flags&fsImmutableFL != 0 }
+
+// ioctlGetFlags / ioctlSetFlags wrap the FS_IOC_{GET,SET}FLAGS ioctls behind
+// package vars so tests can simulate a filesystem that does not honour the
+// immutable attribute (e.g. one where SETFLAGS "succeeds" but the read-back
+// shows the bit never stuck) without needing root or a special mount.
+var (
+	ioctlGetFlags = func(fd int) (int, error) { return unix.IoctlGetInt(fd, unix.FS_IOC_GETFLAGS) }
+	ioctlSetFlags = func(fd, flags int) error { return unix.IoctlSetPointerInt(fd, unix.FS_IOC_SETFLAGS, flags) }
+)
+
 // setImmutable sets the FS immutable flag (chattr +i) on path so it cannot be
-// modified, deleted, or renamed — even by root — until `chattr -i`. Best-effort:
-// silently skips on filesystems that do not support it.
+// modified, deleted, or renamed — even by root — until `chattr -i`, then VERIFIES
+// the bit actually stuck. Not fatal on failure (that would break otherwise-valid
+// deployments) — it warns loudly instead, because the README promises immutability
+// and an operator would otherwise believe the at-rest key is protected when it is
+// not.
 func setImmutable(path string) {
 	f, err := os.Open(path)
 	if err != nil {
 		return
 	}
 	defer f.Close()
-	flags, err := unix.IoctlGetInt(int(f.Fd()), unix.FS_IOC_GETFLAGS)
+	setImmutableFd(int(f.Fd()), path)
+}
+
+// setImmutableFd applies and then re-reads the immutable flag on fd. The read-back
+// is the load-bearing part: on filesystems that do NOT support the immutable
+// attribute (overlayfs, tmpfs, many NFS/network mounts, some ZFS/btrfs setups)
+// FS_IOC_SETFLAGS can return success while silently applying nothing — so without
+// verifying, the daemon would report the key as protected when it is not. A
+// containerised/overlayfs deployment is the common real-world case.
+func setImmutableFd(fd int, path string) {
+	flags, err := ioctlGetFlags(fd)
 	if err != nil {
-		return // e.g. EOPNOTSUPP / ENOTTY on unsupported fs
+		// The fs rejects the flag ioctl outright (EOPNOTSUPP/ENOTTY) — e.g.
+		// overlayfs/tmpfs/some network mounts. Immutability cannot be applied.
+		logger.Warnf("ghostshell-daemon: WARNING: could not read filesystem flags on %s (%v) "+
+			"— the at-rest key is NOT protected from deletion/modification "+
+			"(filesystem does not support the immutable attribute)", path, err)
+		return
 	}
-	const fsImmutableFL = 0x00000010 // FS_IMMUTABLE_FL (stable kernel ABI)
-	if flags&fsImmutableFL != 0 {
+	if hasImmutable(flags) {
 		return // already immutable
 	}
-	_ = unix.IoctlSetPointerInt(int(f.Fd()), unix.FS_IOC_SETFLAGS, flags|fsImmutableFL)
+	if err := ioctlSetFlags(fd, flags|fsImmutableFL); err != nil {
+		// Typically EPERM (missing CAP_LINUX_IMMUTABLE) or EOPNOTSUPP.
+		logger.Warnf("ghostshell-daemon: WARNING: could not make key immutable on %s (%v) "+
+			"— the at-rest key is NOT protected from deletion/modification "+
+			"(filesystem does not support the immutable attribute, or the process lacks CAP_LINUX_IMMUTABLE)", path, err)
+		return
+	}
+	// Verify: read the flags back. Some filesystems accept the SETFLAGS ioctl
+	// without error yet do not persist the bit.
+	after, err := ioctlGetFlags(fd)
+	if err != nil || !hasImmutable(after) {
+		logger.Warnf("ghostshell-daemon: WARNING: could not make key immutable on %s "+
+			"(filesystem does not support the immutable attribute) "+
+			"— the at-rest key is NOT protected from deletion/modification", path)
+		return
+	}
+	logger.Infof("ghostshell-daemon: key %s is immutable (chattr +i) — run `chattr -i %s` before rotating it", path, path)
 }
 
 // encryptedRecordingsExist reports whether any central cast is already
@@ -962,9 +1037,24 @@ func ingestHome(home string, key []byte) {
 			continue
 		}
 		sp := filepath.Join(src, e.Name())
-		if copyFile(sp, filepath.Join(dstDir, e.Name()), key) == nil {
-			_ = os.Remove(sp)
+		dst := filepath.Join(dstDir, e.Name())
+		if err := copyFile(sp, dst, key); err != nil {
+			// Previously this failure was swallowed: an ingest that failed (e.g. the
+			// central volume filled up mid-copy) left no trace, so the operator had
+			// no signal that recordings were not being collected. Log it, and call
+			// out ENOSPC specifically. The source is deliberately left in place so a
+			// later run (after space is freed) can retry; WriteFileAtomic already
+			// removed the partial temp, so nothing half-written is visible.
+			if isNoSpace(err) {
+				logger.Errorf("ghostshell-daemon: DISK FULL ingesting %s -> %s: %v — "+
+					"no space left on the volume backing %s; leaving source in place to retry. "+
+					"Free space or prune the central store.", sp, dst, err, store.CentralDir())
+			} else {
+				logger.Warnf("ghostshell-daemon: ingest %s -> %s failed: %v — leaving source in place to retry", sp, dst, err)
+			}
+			continue
 		}
+		_ = os.Remove(sp)
 	}
 }
 
