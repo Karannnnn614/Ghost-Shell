@@ -59,7 +59,7 @@ ghostshell \- record and replay Linux terminal sessions
 .I runid
 .br
 .B ghostshell init
-.RB [ \-\-reset\-password | \-\-clear\-password ]
+.RB [ \-\-reset\-password | \-\-clear\-password | \-\-enable\-ssh\-forcecommand | \-\-disable\-ssh\-forcecommand ]
 .br
 .B ghostshell completion bash
 .br
@@ -374,7 +374,7 @@ falls back to the user-local directory and the daemon ingests those files on
 its next startup.
 .SH OTHER COMMANDS
 .TP
-.B "init \fR[\fB\-\-reset\-password\fR|\fB\-\-clear\-password\fR]"
+.B "init \fR[\fB\-\-reset\-password\fR|\fB\-\-clear\-password\fR|\fB\-\-enable\-ssh\-forcecommand\fR|\fB\-\-disable\-ssh\-forcecommand\fR]"
 Run the first-time setup wizard (checks config, daemon reachability, encryption
 key, and playback-password status).
 .B \-\-reset\-password
@@ -386,6 +386,34 @@ is set, the read commands
 prompt for it. The hash is stored in
 .I /etc/ghostshell/.playback_passwd
 .RB ( root:root " 0600)."
+.IP
+.B \-\-enable\-ssh\-forcecommand
+(root) opts in to recording
+.B non-interactive
+SSH commands
+.RB ( "ssh host \(dqcmd\(dq" ).
+It is
+.B not
+installed by default. It writes
+.I /etc/ssh/sshd_config.d/zz\-ghostshell.conf
+with a
+.B ForceCommand
+pointing at
+.IR /usr/libexec/ghostshell\-ssh\-wrap ,
+ensures the main
+.I sshd_config
+includes the drop\-in directory, validates with
+.BR "sshd \-t" ,
+and reloads sshd. If validation fails it reverts only its own edits (never a
+pre\-existing
+.BR Include ),
+so sshd is never left unparseable.
+.B \-\-disable\-ssh\-forcecommand
+(root) removes that drop\-in and reloads sshd, leaving the
+.B Include
+directive and any other drop\-ins in place. Both are idempotent;
+.BR scp / sftp / rsync /git
+transfers pass through untouched and the wrapper is fail\-open.
 .TP
 .B "completion bash"
 Print the bash completion script (install to
@@ -596,12 +624,13 @@ Records terminal output only; keystrokes (input) are not captured.
 .IP \(bu 2
 Records only sessions started under
 .BR "ghostshell rec" .
-The optional login hook and sshd
+The optional login hook and the opt-in sshd
 .B ForceCommand
-wrapper (installed by the packages) auto-record logins and remote commands, but
-both are fail-open and can be sidestepped by a user who avoids ghostshell.
-Non-circumventable capture would require PAM- or kernel-stage hooks, which are
-not implemented.
+wrapper (enabled with
+.BR "ghostshell init \-\-enable\-ssh\-forcecommand" )
+auto-record logins and remote commands, but both are fail-open and can be
+sidestepped by a user who avoids ghostshell. Non-circumventable capture would
+require PAM- or kernel-stage hooks, which are not implemented.
 .IP \(bu 2
 Not tamper-proof against a malicious user: ghostshell provides root-only audit
 visibility, not an enforcement boundary. See the security model in the project

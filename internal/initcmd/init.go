@@ -25,14 +25,23 @@ func Run(args []string) error {
 	fs := flag.NewFlagSet("init", flag.ContinueOnError)
 	resetPw := fs.Bool("reset-password", false, "change the playback password (requires current password)")
 	clearPw := fs.Bool("clear-password", false, "remove playback password protection (requires current password)")
+	enableSSH := fs.Bool("enable-ssh-forcecommand", false, "enable sshd ForceCommand recording of non-interactive SSH commands (root)")
+	disableSSH := fs.Bool("disable-ssh-forcecommand", false, "disable sshd ForceCommand recording of non-interactive SSH commands (root)")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if *enableSSH && *disableSSH {
+		return errors.New("--enable-ssh-forcecommand and --disable-ssh-forcecommand are mutually exclusive")
 	}
 	switch {
 	case *resetPw:
 		return cmdResetPassword()
 	case *clearPw:
 		return cmdClearPassword()
+	case *enableSSH:
+		return cmdEnableSSHForceCommand()
+	case *disableSSH:
+		return cmdDisableSSHForceCommand()
 	default:
 		return wizard()
 	}

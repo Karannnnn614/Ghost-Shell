@@ -268,6 +268,8 @@ audit commands (central root-only store):
   ghostshell init                             first-time setup wizard
   ghostshell init --reset-password            change playback password (requires current)
   ghostshell init --clear-password            remove playback password (requires current)
+  ghostshell init --enable-ssh-forcecommand   opt in to recording non-interactive SSH (root)
+  ghostshell init --disable-ssh-forcecommand  stop recording non-interactive SSH (root)
   ghostshell completion bash                  print the bash completion script
   ghostshell version                          print version
   ghostshell --check                          validate config and show resolved values
@@ -290,9 +292,11 @@ func commandHelp(name string) (string, bool) {
 	case "init":
 		return `ghostshell init — first-time setup wizard and playback password management
 
-usage: ghostshell init                    run the setup wizard
-       ghostshell init --reset-password   change the playback password
-       ghostshell init --clear-password   remove playback password protection
+usage: ghostshell init                             run the setup wizard
+       ghostshell init --reset-password            change the playback password
+       ghostshell init --clear-password            remove playback password protection
+       ghostshell init --enable-ssh-forcecommand   opt in to recording non-interactive SSH (root)
+       ghostshell init --disable-ssh-forcecommand  disable non-interactive SSH recording (root)
 
 The wizard checks:
   [1/4] Config file (/etc/ghostshell/ghostshell.conf)
@@ -304,6 +308,16 @@ The wizard checks:
 A playback password must be at least 8 characters.
 The hash is stored in /etc/ghostshell/.playback_passwd (root:root 0600).
 When set, ghostshell play prompts for the password before replaying any session.
+
+--enable-ssh-forcecommand (root) opts in to recording non-interactive SSH
+commands (ssh host "cmd"). It is NOT installed by default. It writes
+/etc/ssh/sshd_config.d/zz-ghostshell.conf with a ForceCommand pointing at
+/usr/libexec/ghostshell-ssh-wrap, ensures the main sshd_config includes the
+drop-in directory, validates with 'sshd -t', and reloads sshd. If validation
+fails it reverts only its own edits, never leaving sshd unparseable. scp/sftp/
+rsync/git transfers still pass through untouched and the wrapper is fail-open.
+--disable-ssh-forcecommand (root) removes that drop-in and reloads sshd, leaving
+the Include directive and any other drop-ins in place. Both are idempotent.
 `, true
 	case "rec", "record":
 		return `ghostshell rec — record a terminal session

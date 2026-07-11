@@ -34,7 +34,7 @@ _ghostshell() {
 
     case "$sub" in
         init)
-            COMPREPLY=( $(compgen -W "--reset-password --clear-password" -- "$cur") ) ;;
+            COMPREPLY=( $(compgen -W "--reset-password --clear-password --enable-ssh-forcecommand --disable-ssh-forcecommand" -- "$cur") ) ;;
         rec)
             COMPREPLY=( $(compgen -W "-q -o" -- "$cur") ) ;;
         play)

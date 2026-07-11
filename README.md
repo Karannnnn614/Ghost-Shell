@@ -372,28 +372,34 @@ sudo install -m644 scripts/profile.d/ghostshell-autorec.sh /etc/profile.d/ghosts
 
 The hook only triggers for interactive shells with a real TTY and skips when `ghostshell` is absent. It skips nested shells (`sudo su -`, `su -`, subshells) two ways: an exported `GHOSTSHELL_REC=1` marker that the hook sets before recording (inherited by child shells, robust against process-name spoofing) and, as a fallback, detecting a `ghostshell` process in the ancestry. It is fail-open: if the recorder cannot start, a normal shell continues. Remove the file to disable.
 
-## Record non-interactive SSH (optional)
+## Record non-interactive SSH (optional, opt-in)
 
-The login hook records interactive sessions only. To also record **non-interactive** SSH commands (`ssh host "cmd"`), enable the sshd `ForceCommand` wrapper. The package installs it automatically if `/etc/ssh/sshd_config.d/` exists (and adds the `Include` directive to the main `sshd_config` if needed). To enable manually:
+The login hook records interactive sessions only. To also record **non-interactive** SSH commands (`ssh host "cmd"`), enable the sshd `ForceCommand` wrapper. **This is opt-in and is NOT installed by default** — installing the package ships the wrapper binary but leaves it inactive so an unattended server is never silently reconfigured to wrap every SSH login. Turn it on explicitly, as root:
 
 ```bash
-sudo cp /usr/share/doc/ghostshell/sshd-forcecommand.conf.example \
-        /etc/ssh/sshd_config.d/zz-ghostshell.conf
-sudo sshd -t && sudo systemctl reload ssh
+sudo ghostshell init --enable-ssh-forcecommand
 ```
+
+This writes `/etc/ssh/sshd_config.d/zz-ghostshell.conf` (a `ForceCommand /usr/libexec/ghostshell-ssh-wrap` drop-in), ensures the main `sshd_config` has an `Include /etc/ssh/sshd_config.d/*.conf` line, validates with `sshd -t`, and reloads sshd. If validation fails it reverts only the edits it made (never touching a pre-existing `Include`), so sshd is always left parseable. It is idempotent — re-running when already enabled changes nothing.
+
+Turn it off again with:
+
+```bash
+sudo ghostshell init --disable-ssh-forcecommand
+```
+
+which removes the drop-in and reloads sshd, leaving the `Include` directive and any other drop-ins untouched.
 
 - `scp` / `sftp` / `rsync` / git transfers pass through untouched.
 - Interactive logins keep recording via the profile.d hook (no double-wrap).
 - Fail-open: if anything is off, the command runs normally — SSH is never blocked.
 
-Exclude an account with a `Match` block:
+To exclude an account, edit the generated `/etc/ssh/sshd_config.d/zz-ghostshell.conf` to use a `Match` block instead of the global `ForceCommand`, then `sudo sshd -t && sudo systemctl reload ssh`:
 
 ```text
 Match User *,!adminuser
     ForceCommand /usr/libexec/ghostshell-ssh-wrap
 ```
-
-Disable by removing `/etc/ssh/sshd_config.d/zz-ghostshell.conf` and reloading sshd.
 
 ## Shell completion
 
