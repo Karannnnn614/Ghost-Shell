@@ -70,12 +70,14 @@ Whole tree after the pass: `gofmt`/`go vet`/`staticcheck`/`golangci-lint` clean,
 
 ---
 
+## Resolved after the audit (implemented + tested + shipped)
+- ✅ **REC `OK` ack** (§3) — the daemon now sends `OK\n` once a REC session is registered; the recorder waits for it and falls back to a user-local file on ERR (cap/disk/collision), read timeout (wedged daemon), or EOF. No more silent recording loss or startup hang. Unit tests (OK→central, ERR→local, wedged→local, daemon-sends-OK) + e2e (100%-full store → local fallback); `-race` clean.
+- ✅ **sshd `ForceCommand` is now opt-in** (§1/§3) — removed from package postinstall; enable with `sudo ghostshell init --enable-ssh-forcecommand` (root; `sshd -t` validated; reverts only its own edits; idempotent), disable with `--disable-ssh-forcecommand`. Unit tests + real-sshd e2e.
+
 ## Deferred — need your decision (behavior left unchanged)
-1. **REC `OK` ACK** (§3) — closes the silent-recording-loss + mid-session hang under load/full-disk. Cross-package (daemon + record). **Recommended.**
-2. **`min_free_space`/quota** (§5) — graceful ingestion pause before ENOSPC. Availability-vs-completeness tradeoff; can be gamed.
-3. **`CapabilityBoundingSet`** (§6) — biggest remaining systemd-score lever; add after a staged on-host test (incomplete set breaks ingest/chattr).
-4. **arm64 package** (§1) — add an arm64 build-matrix target.
-5. **sshd `ForceCommand` auto-installed on package install** — zero-touch coverage vs. surprising every SSH login on an unattended box. Mitigations already present (sshd -t validation now reverts only our edits, fail-open wrapper, preremove passthrough). Alternative: explicit opt-in `ghostshell init --enable-ssh-forcecommand`.
+1. **`min_free_space`/quota** (§5) — graceful ingestion pause before ENOSPC. Availability-vs-completeness tradeoff; can be gamed.
+2. **`CapabilityBoundingSet`** (§6) — biggest remaining systemd-score lever; add after a staged on-host test (incomplete set breaks ingest/chattr).
+3. **arm64 package** (§1) — add an arm64 build-matrix target.
 
 ## Recommended before flipping to production
 - Land the **REC `OK` ACK** (#1) — it's the one change that removes a *silent audit-data-loss* path on a busy/full host.
