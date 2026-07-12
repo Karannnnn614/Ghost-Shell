@@ -1,25 +1,49 @@
 <div align="center">
 
-# Ghost Shell
+# 👻 Ghost Shell
 
-Terminal session recorder and audit tool for Linux — captures every shell session, encrypts it at rest, and lets operators replay, search, and live-tail from a root-only central store.
+### Every shell session on your Linux box — recorded, encrypted, replayable.
 
-[![CI](https://img.shields.io/github/actions/workflow/status/Karannnnn614/Ghost-Shell/ci.yml?style=for-the-badge)](https://github.com/Karannnnn614/Ghost-Shell/actions)
+A terminal session recorder and root audit daemon. It captures every shell session (including SSH),
+encrypts it at rest with **AES-256-GCM**, and lets operators **replay, search, and live-tail** from a
+**root-only** central store.
+
+**One static Go binary. No agent, no database, no runtime dependencies.**
+
+[![CI](https://img.shields.io/github/actions/workflow/status/Karannnnn614/Ghost-Shell/ci.yml?style=for-the-badge&label=CI)](https://github.com/Karannnnn614/Ghost-Shell/actions)
 [![Release](https://img.shields.io/github/v/release/Karannnnn614/Ghost-Shell?style=for-the-badge)](https://github.com/Karannnnn614/Ghost-Shell/releases)
+[![Go](https://img.shields.io/badge/Go-1.25-00ADD8?style=for-the-badge&logo=go&logoColor=white)](go.mod)
+[![Platform](https://img.shields.io/badge/platform-Linux-333333?style=for-the-badge&logo=linux&logoColor=white)](#requirements)
 [![License](https://img.shields.io/github/license/Karannnnn614/Ghost-Shell?style=for-the-badge)](LICENSE)
-[![Stars](https://img.shields.io/github/stars/Karannnnn614/Ghost-Shell?style=for-the-badge)](https://github.com/Karannnnn614/Ghost-Shell/stargazers)
-[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen?style=for-the-badge)](CONTRIBUTING.md)
 
 </div>
 
 ---
 
-## What is this?
+## Why Ghost Shell?
 
-`ghostshell` is a command-line terminal session recorder for Linux. It runs a shell under a PTY, captures output as an [asciinema v2](https://docs.asciinema.org/manual/asciicast/v2/) cast file, and replays it with original timing. A companion root daemon, `ghostshell-daemon`, collects sessions from all users into a root-only central store (`/var/lib/ghostshell`) so host activity can be reviewed and live-tailed for audit. It is a single static Go binary with no runtime dependencies.
+`~/.bash_history` lies — it's user-writable, drops pipes, and never records output.
+`script(1)` writes plaintext anyone can read. `asciinema` is built for demos, not audit.
+
+Ghost Shell exists for the case where you actually need to answer **"what happened on that box?"**
+
+|  |  |
+|---|---|
+| 🔒 **Encrypted at rest** | AES-256-GCM. `cat`, `strings`, `grep` on a recording reveal only ciphertext. |
+| 👑 **Root-only store** | Every user's sessions land in `/var/lib/ghostshell` (`root:root 0700`). Users can't read *anyone's* recordings — not even their own. |
+| 📡 **Live tail** | Watch a session as it happens: `ghostshell tail -f <id>`. |
+| 🎬 **Real replay** | Full-screen player — seek, variable speed, jump-to-command, original timing preserved. |
+| 🔎 **Search everything** | Grep across every recording on the host, with natural-language date filters (`--from "2 days ago"`). |
+| 🪶 **Single static binary** | ~3.5 MB, `CGO_ENABLED=0`, zero runtime deps. Ships as `.deb` / `.rpm` with a systemd unit. |
+| 🛟 **Fail-open by design** | If the daemon is down, busy, or out of disk, recording falls back to a local file and is ingested later. It never blocks a login — and never silently loses a session. |
+
+**Built to be deployed unattended:** [security-audited](AUDIT.md), race-tested, `staticcheck` + `golangci-lint` clean, and systemd-hardened (`systemd-analyze security` rates the daemon **3.9 OK**). The full pre-production review — including a real Ubuntu install, cross-user isolation, disk-full and symlink-attack tests — is in [DEPLOYMENT.md](DEPLOYMENT.md).
+
+> ⚠️ **Honest limitation:** Ghost Shell is an audit/visibility tool, **not** a tamper-proof enforcement boundary. A determined user with shell access can start a shell that was never wrapped. See the [Security model](#security-model) for the real threat model.
 
 ## Table of contents
 
+- [Why Ghost Shell?](#why-ghost-shell)
 - [Features](#features)
 - [Demo](#demo)
 - [Installation](#installation)
@@ -53,52 +77,48 @@ Terminal session recorder and audit tool for Linux — captures every shell sess
 - **Config file** at `/etc/ghostshell/ghostshell.conf` with all defaults visible; `ghostshell --check` validates and prints resolved values.
 - **Ansible tracking** — records playbook runs (plays, tasks, per-host status, output) on the controller via a callback plugin.
 - **Auto-record on login** via an optional `profile.d` hook (skips nested `sudo su -`).
-- **Fail-open**: if the daemon is down, recording falls back to a user-local file and is ingested into the central store when the daemon restarts.
+- **Fail-open**: if the daemon is down, busy (per-user session cap), out of disk, or wedged, recording falls back to a user-local file and is ingested into the central store when the daemon restarts — a recording is never silently lost.
 - **Bash tab-completion** for subcommands, flags, sessions, and users.
 - Ships as `rpm` and `deb` packages with a systemd unit.
 
 ## Demo
 
-```text
-$ ghostshell --help
-Ghost Shell — Linux terminal session tracker
+**As a normal user** — just work. The session records itself.
 
-usage:
-  ghostshell rec [-q] [-o file] [cmd...]      record a shell session (default: $SHELL)
-  ghostshell play [--speed N] <file|id>       replay local file or central session (auto-detect)
-  ghostshell ls                               list local recordings
-  ghostshell ls --all                         list all users in central store (root)
-  ghostshell ls --user <name>                 list one user's sessions in central store (root)
+```console
+$ ghostshell rec
+ghostshell: recording to ghostshell-daemon (central) — type 'exit' or Ctrl-D to stop
+$ sudo systemctl restart nginx
+$ exit
 
-audit commands (central root-only store):
-  ghostshell tail [-n N] <id>                 show last N lines of a session (default 20)
-  ghostshell tail -f <id>                     live-stream an in-progress session (root)
-  ghostshell tree                             users -> sessions tree (root)
-  ghostshell search [opts] <string>           find a string across recordings (root)
-  ghostshell export [-o file] <id>            decrypt a session to a plaintext cast (root)
-  ghostshell prune                            interactively delete recordings (root)
-  ghostshell backup                           run configured backup immediately (root)
-  ghostshell ansible list [--user U]          list Ansible playbook runs (root)
-  ghostshell ansible show <runid>             show tasks and recap for a run (root)
-
-  ghostshell init                             first-time setup wizard
-  ghostshell init --reset-password            change playback password (requires current)
-  ghostshell init --clear-password            remove playback password (requires current)
-  ghostshell completion bash                  print the bash completion script
-  ghostshell version                          print version
-  ghostshell --check                          validate config and show resolved values
-
-search opts: --from / --to <YYYY-MM-DD[ HH:MM]>, --user <name>, -i
-recordings in the central store are encrypted at rest (opaque to cat/strings)
-
-local recordings: $GHOSTSHELL_DIR or ~/.local/share/ghostshell
-central store:    $GHOSTSHELL_CENTRAL_DIR or /var/lib/ghostshell (root:root 0700)
-format: asciinema v2 cast (.cast) — also playable with `asciinema play`
-
-run 'ghostshell help <command>' (or 'ghostshell <command> --help') for command details
+$ ghostshell play 20260711T142031-4471        # full-screen replay, original timing
 ```
 
-> Run `ghostshell help <command>` for detailed per-command help (options and, for `play`, the full list of player controls).
+**As root** — audit the whole host.
+
+```console
+# Who has been on this box?
+$ sudo ghostshell ls --all
+USER                  SESSIONS   LAST ACTIVE
+alice                 12         2026-07-11 14:20
+deploy                3          2026-07-11 09:02
+
+# Did anyone touch nginx in the last two days?
+$ sudo ghostshell search --from "2 days ago" nginx
+user=alice  when=2026-07-11 14:20:31  session=20260711T142031-4471
+    cmd: -bash
+    > sudo systemctl restart nginx
+    > Job for nginx.service failed because the control process exited with error code.
+
+# Watch a session live, while it's still happening.
+$ sudo ghostshell tail -f 20260711T142031-4471
+
+# And on disk? Opaque.
+$ sudo strings /var/lib/ghostshell/alice/20260711T142031-4471.cast | head -1
+TTEC2                     # ← AES-256-GCM ciphertext, not alice's commands
+```
+
+> Full CLI reference: `ghostshell --help`, or `ghostshell help <command>` for per-command detail (including every player control).
 
 ## Requirements
 
@@ -315,11 +335,11 @@ $ sudo ghostshell export -o session.cast 20260526T151022-1426734
 exported plaintext cast to session.cast      # now asciinema-compatible
 ```
 
-The key is **unique per server** and set **immutable** (`chattr +i`): it cannot be deleted, renamed, or modified by `rm`/`vi`/`sed`/`>`/`tee` — even by root — until someone runs `chattr -i`.
+The key is **unique per server** and set **immutable** (`chattr +i`): it cannot be deleted, renamed, or modified by `rm`/`vi`/`sed`/`>`/`tee` — even by root — until someone runs `chattr -i`. This depends on the filesystem: ext4/xfs support the immutable attribute, but overlayfs, tmpfs and many network mounts silently ignore it. The daemon verifies the flag actually stuck and logs a loud warning if it did not (see [Security model](#security-model)).
 
 > **Back up `/var/lib/ghostshell/.ghostshell.key`** — if it is lost, every encrypted recording is permanently unreadable. The daemon refuses to start if the key is missing while encrypted recordings exist.
 
-**Fail-open:** if the daemon is unreachable, `ghostshell rec` records to the user-local directory; on its next startup `ghostshell-daemon` ingests those files into the central store.
+**Fail-open:** if the daemon is unreachable — or *rejects* the session (per-user session cap reached, central store full) or is wedged — `ghostshell rec` records to the user-local directory; on its next startup `ghostshell-daemon` ingests those files into the central store. The daemon replies `OK` only once a session is actually registered, so the recorder can tell a real central session from a rejection and never streams a recording into a doomed connection.
 
 See [Security model](#security-model) for the full trust boundary, the integrity caveat, and the threat model.
 
@@ -337,6 +357,7 @@ Read this before relying on ghostshell for audit. It explains what ghostshell do
 
 - Central recordings are **AES-256-GCM** encrypted; on disk a `.cast` is opaque to `cat`/`strings`/`grep`.
 - The key (`/var/lib/ghostshell/.ghostshell.key`, `root:root 0600`) is **unique per server** and made **immutable** with `chattr +i` so it cannot be removed, renamed, or rewritten by `rm`/`vi`/`sed`/`>`/`tee` — even by root — until someone explicitly runs `chattr -i`.
+- **Immutability depends on the filesystem.** ext4/xfs support the immutable attribute; **overlayfs, tmpfs and many network mounts silently ignore it**, leaving the key deletable. The daemon reads the flag back after setting it and, if it did not stick, logs `WARNING: ... the at-rest key is NOT protected from deletion/modification`. If you see that line, the store is on a filesystem that cannot protect the key — move it to ext4/xfs or accept the reduced guarantee.
 - **Back up the key.** If it is lost, every encrypted recording is permanently unreadable; the daemon refuses to start if the key is missing while encrypted recordings exist.
 
 ### Optional playback password
@@ -350,13 +371,14 @@ Read this before relying on ghostshell for audit. It explains what ghostshell do
 ### Path-traversal and permission posture
 
 - Session ids are validated and resolved within the central store; the ingest sweep admits only regular `.cast` files and rejects symlinks/irregular entries, so a crafted home-directory entry cannot redirect the root ingest at an arbitrary target.
-- The daemon writes recordings `0600` and store directories `0700`, and runs under a hardened systemd unit (`NoNewPrivileges`, `ProtectSystem=full`, restricted address families, `UMask=0077`). It intentionally does **not** enable `ProtectHome`, because it must read and delete each user's `~/.local/share/ghostshell` spool during ingest.
+- The daemon writes recordings `0600` and store directories `0700`, and runs under a hardened systemd unit (`NoNewPrivileges`, `ProtectSystem=full`, `SystemCallFilter=@system-service`, `ProtectKernelModules`/`ProtectKernelLogs`, `LockPersonality`, `RestrictNamespaces`/`RestrictRealtime`, `ProtectClock`/`ProtectHostname`, `RestrictAddressFamilies=AF_UNIX`, `UMask=0077` — `systemd-analyze security` rates it **3.9 OK**). It intentionally does **not** enable `ProtectHome`, because it must read and delete each user's `~/.local/share/ghostshell` spool during ingest.
 
 ### Fail-open semantics
 
 Every capture path is **fail-open by design** so ghostshell can never lock a user out or break a login/SSH session:
 
-- If the daemon is down, `ghostshell rec` writes a user-local file (`~/.local/share/ghostshell`, the user's own permissions) and the daemon ingests it on next startup.
+- If the daemon is down, **rejects** the session (per-user `session_cap` reached, central store full, id collision), or is **wedged** (accepted the connection but stopped responding), `ghostshell rec` writes a user-local file (`~/.local/share/ghostshell`, `0600`) and the daemon ingests it on next startup. The daemon sends an `OK` acknowledgement only once a session is registered, and the recorder waits for it with a bounded timeout — so a rejection or a hung daemon can never silently swallow a recording, nor block a login.
+- If the central store fills up mid-session, the daemon logs a `DISK FULL` error naming the path, terminates that session cleanly, and keeps serving other users.
 - The `profile.d` login hook and the sshd `ForceCommand` wrapper fall through to a normal shell on any error, and pass `scp`/`sftp`/`rsync`/git transfers through untouched.
 
 The flip side of fail-open is the integrity caveat above: availability is prioritized over guaranteed capture.
@@ -689,6 +711,10 @@ Licensed under the GNU General Public License v2.0. See [LICENSE](LICENSE).
 
 <div align="center">
 
-[![Star History Chart](https://api.star-history.com/svg?repos=Karannnnn614/Ghost-Shell&type=Date)](https://star-history.com/#Karannnnn614/Ghost-Shell&Date)
+### 👻 Ghost Shell — know what actually happened on your box.
+
+If this is useful to you, a ⭐ helps other operators find it.
+
+[Report a bug](https://github.com/Karannnnn614/Ghost-Shell/issues) · [Request a feature](https://github.com/Karannnnn614/Ghost-Shell/issues) · [Contribute](CONTRIBUTING.md)
 
 </div>
