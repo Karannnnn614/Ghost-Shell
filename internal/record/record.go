@@ -6,6 +6,8 @@
 package record
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
@@ -14,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -25,8 +28,46 @@ import (
 
 	"ghostshell/internal/cast"
 	"ghostshell/internal/config"
+	"ghostshell/internal/span"
 	"ghostshell/internal/store"
 )
+
+// defaultTraceShim is where the package installs the bash trace shim; the
+// recorder points the traced shell's BASH_ENV (and, for an interactive bash,
+// --rcfile) at it. Overridable via GHOSTSHELL_TRACE_SHIM for tests. If the file
+// does not exist, process-trace tracing silently no-ops and recording is
+// unaffected.
+const defaultTraceShim = "/usr/share/ghostshell/trace-shim.sh"
+
+// traceShimPath returns the trace shim path, overridable via the
+// GHOSTSHELL_TRACE_SHIM environment variable (used by tests and operators who
+// relocate the shim).
+func traceShimPath() string {
+	if v := os.Getenv("GHOSTSHELL_TRACE_SHIM"); v != "" {
+		return v
+	}
+	return defaultTraceShim
+}
+
+// mintTraceID returns a hex-encoded 16-byte random trace id (path-safe). An
+// empty string is returned if the system RNG fails, in which case the caller
+// disables tracing for the session (recording is unaffected).
+func mintTraceID() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return ""
+	}
+	return hex.EncodeToString(b[:])
+}
+
+// regularFileExists reports whether p names an existing regular file.
+func regularFileExists(p string) bool {
+	if p == "" {
+		return false
+	}
+	fi, err := os.Stat(p)
+	return err == nil && fi.Mode().IsRegular()
+}
 
 // drainGrace bounds how long Run waits, after the child is reaped, for the
 // output reader to drain the PTY's remaining buffered bytes and finish on its
@@ -133,6 +174,10 @@ func Run(args []string) error {
 	quiet := *quietFlag || os.Getenv("GHOSTSHELL_QUIET") != ""
 
 	cmdArgs := fs.Args()
+	// explicitCmd records whether the user passed a command vector as rec
+	// positionals (vs. defaulting to $SHELL). Only the default-shell case is
+	// eligible for the interactive `bash --rcfile` trace path.
+	explicitCmd := len(cmdArgs) > 0
 	shell := os.Getenv("SHELL")
 	if shell == "" {
 		shell = "/bin/bash"
@@ -141,13 +186,18 @@ func Run(args []string) error {
 		cmdArgs = []string{shell}
 	}
 
+	// Mint the session's process-trace id up front so it can be stamped into the
+	// cast header (for later correlation) and exported to the traced shell. A
+	// failure to mint simply disables tracing (traceID == ""); recording proceeds.
+	traceID := mintTraceID()
+
 	sink, dest, serr := openSink(*out)
 	if serr != nil {
 		return serr
 	}
 	defer sink.Close()
 
-	cw, err := cast.NewWriter(sink, buildHeader(cmdArgs, shell))
+	cw, err := cast.NewWriter(sink, buildHeader(cmdArgs, shell, traceID))
 	if err != nil {
 		return err
 	}
@@ -157,7 +207,32 @@ func Run(args []string) error {
 			"ghostshell: recording to %s — type 'exit' or Ctrl-D to stop\r\n", dest)
 	}
 
-	cmd := exec.Command(cmdArgs[0], cmdArgs[1:]...)
+	// Process-trace wiring (ADDITIVE, fail-open). Tracing activates only when a
+	// trace id was minted AND the shim exists on disk; otherwise the exec and
+	// environment are byte-for-byte unchanged and recording is unaffected.
+	shimPath := traceShimPath()
+	traceOn := traceID != "" && regularFileExists(shimPath)
+
+	execArgs := cmdArgs
+	if traceOn && !explicitCmd && filepath.Base(cmdArgs[0]) == "bash" {
+		// Interactive bash launched with no explicit command vector: an
+		// interactive shell ignores BASH_ENV, so install the trap via --rcfile.
+		// The shim sources the user's real rc first, preserving their environment.
+		execArgs = []string{cmdArgs[0], "--rcfile", shimPath}
+	}
+
+	cmd := exec.Command(execArgs[0], execArgs[1:]...)
+	if traceOn {
+		// GHOSTSHELL_TRACE_SOCK reuses the same socket path the recorder dials for
+		// the daemon (openSink -> config.Load().SocketPath). BASH_ENV covers nested
+		// non-interactive bash children; the shim no-ops for non-bash shells.
+		cmd.Env = append(os.Environ(),
+			"GHOSTSHELL_TRACE_ID="+traceID,
+			"GHOSTSHELL_TRACE_SOCK="+config.Load().SocketPath,
+			"GHOSTSHELL_TRACE_DEPTH=0",
+			"BASH_ENV="+shimPath,
+		)
+	}
 	ptmx, err := pty.Start(cmd)
 	if err != nil {
 		return err
@@ -267,20 +342,27 @@ func Run(args []string) error {
 	return nil
 }
 
-// buildHeader builds the cast header, using the current terminal size if available.
-func buildHeader(cmdArgs []string, shell string) cast.Header {
+// buildHeader builds the cast header, using the current terminal size if
+// available. When traceID is non-empty it is stamped under span.HeaderTraceKey
+// so `tree`/`analyze` can later correlate the recording to its span store;
+// asciinema tolerates the extra header key and playback is unaffected.
+func buildHeader(cmdArgs []string, shell, traceID string) cast.Header {
 	width, height := 80, 24
 	if fd := int(os.Stdin.Fd()); term.IsTerminal(fd) {
 		if w, h, err := term.GetSize(fd); err == nil {
 			width, height = w, h
 		}
 	}
+	env := map[string]string{"SHELL": shell, "TERM": os.Getenv("TERM")}
+	if traceID != "" {
+		env[span.HeaderTraceKey] = traceID
+	}
 	return cast.Header{
 		Width:     width,
 		Height:    height,
 		Timestamp: time.Now().Unix(),
 		Command:   strings.Join(cmdArgs, " "),
-		Env:       map[string]string{"SHELL": shell, "TERM": os.Getenv("TERM")},
+		Env:       env,
 	}
 }
 

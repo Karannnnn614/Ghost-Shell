@@ -11,11 +11,14 @@
 //	client -> "REC\n"              then streams asciinema v2 cast bytes (recorder)
 //	client -> "TAIL <id>\n"        then reads live cast bytes (root only)
 //	client -> "ANSIBLE <runid>\n"  then streams JSON-lines ansible run bytes
+//	client -> "SPAN <traceID>\n"   then streams JSON-lines process-trace spans
 package daemon
 
 import (
 	"bufio"
 	"context"
+	cryptorand "crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -606,6 +609,8 @@ func handle(conn *net.UnixConn, reg *registry) {
 		handleTail(conn, strings.TrimSpace(line[5:]), cred, reg)
 	case strings.HasPrefix(line, "ANSIBLE "):
 		handleAnsible(conn, br, strings.TrimSpace(line[8:]), cred, reg)
+	case strings.HasPrefix(line, "SPAN "):
+		handleSpan(conn, br, strings.TrimSpace(line[5:]), cred, reg)
 	default:
 		_, _ = conn.Write([]byte("ERR unknown command\n"))
 	}
@@ -813,6 +818,107 @@ func handleAnsible(conn *net.UnixConn, br *bufio.Reader, runID string, cred *uni
 		return
 	}
 	logger.Infof("ghostshell-daemon: ansible run stored  user=%-20s run=%s bytes=%d", uname, runID, ansibleBytes)
+}
+
+// newSpanChunkID mints a unique chunk id for one SPAN report: a
+// nanosecond timestamp, the verified peer pid, and 8 random bytes. Uniqueness
+// matters because each report opens a UNIQUE O_EXCL chunk file (concatenating
+// two crypto streams into one file is not readable), and the timestamp+pid+rand
+// combination makes an O_EXCL collision effectively impossible. Every byte of
+// the id is within the [A-Za-z0-9._-] allowlist that store.ValidTraceID and the
+// path builders enforce.
+func newSpanChunkID(pid int32) string {
+	var r [8]byte
+	// crypto/rand can, in principle, fail; fall back to a fixed suffix so the id
+	// is still well-formed (O_EXCL still guards against the unlikely collision).
+	if _, err := cryptorand.Read(r[:]); err != nil {
+		return fmt.Sprintf("%s-%d-00000000", time.Now().Format("20060102T150405.000000000"), pid)
+	}
+	return fmt.Sprintf("%s-%d-%s", time.Now().Format("20060102T150405.000000000"), pid, hex.EncodeToString(r[:]))
+}
+
+// handleSpan stores a process-trace span report from `ghostshell __report-span`
+// (invoked by the trace shim). It mirrors handleAnsible: the traceID is a
+// grouping key WITHIN the peer uid's own dir — peer identity comes only from the
+// verified SO_PEERCRED uid, never from the client, so a co-user guessing another
+// user's traceID can only ever pollute their OWN span dir. Each report writes
+// ONE fresh, uniquely-named chunk file (a single self-contained crypto stream);
+// `tree`/`analyze` list the trace dir, decrypt each chunk, and merge.
+func handleSpan(conn *net.UnixConn, br *bufio.Reader, traceID string, cred *unix.Ucred, reg *registry) {
+	if !store.ValidTraceID(traceID) {
+		_, _ = conn.Write([]byte("ERR invalid trace id\n"))
+		return
+	}
+
+	// Same per-UID reservation as handleRec/handleAnsible so a user can't open
+	// unbounded concurrent SPAN streams (each report counts against the cap).
+	if !reg.reserve(cred.Uid) {
+		_, _ = conn.Write([]byte("ERR too many sessions\n"))
+		return
+	}
+	defer reg.release(cred.Uid)
+
+	uname := lookupUser(cred.Uid)
+	dir := store.SpanDir(uname, traceID)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		// Best-effort: the reporter fails open and never reads a reply, so just
+		// log why the span was dropped and return.
+		logger.Warnf("ghostshell-daemon: cannot create span dir %s (uid=%d): %v — span dropped", dir, cred.Uid, err)
+		return
+	}
+	_ = os.Chmod(dir, 0o700)
+
+	chunkID := newSpanChunkID(cred.Pid)
+	path := store.SpanChunkPath(uname, traceID, chunkID)
+	// O_EXCL: a fresh, unique chunk per report — never truncate/clobber. O_NOFOLLOW:
+	// don't follow a symlink planted at the target. A collision (EEXIST) is not
+	// normally reachable given the nanos+pid+rand id; if it ever happens the report
+	// is simply dropped (fail-open).
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY|unix.O_NOFOLLOW, 0o600)
+	if err != nil {
+		logger.Errorf("ghostshell-daemon: open span file %s: %v", path, err)
+		_, _ = conn.Write([]byte("ERR span file unavailable\n"))
+		return
+	}
+	enc, err := crypto.NewWriter(f, reg.key)
+	if err != nil {
+		f.Close()
+		return
+	}
+
+	var spanBytes int64
+	var writeErr error
+	buf := make([]byte, 32*1024)
+	for {
+		n, rerr := br.Read(buf)
+		if n > 0 {
+			spanBytes += int64(n)
+			if _, werr := enc.Write(buf[:n]); werr != nil {
+				writeErr = werr
+				break
+			}
+		}
+		if rerr != nil {
+			break
+		}
+	}
+
+	// Surface a Sync/Close failure with the same ENOSPC-aware logging as ansible:
+	// a swallowed fsync error can mean the spans were not durably persisted.
+	syncErr := f.Sync()
+	closeErr := f.Close()
+	if writeErr != nil || syncErr != nil || closeErr != nil {
+		if isNoSpace(writeErr) || isNoSpace(syncErr) || isNoSpace(closeErr) {
+			logger.Errorf("ghostshell-daemon: DISK FULL storing span chunk user=%-20s trace=%s bytes=%d — "+
+				"no space left on the volume backing %s; chunk NOT stored (write=%v sync=%v close=%v). "+
+				"Free space or prune the central store.", uname, traceID, spanBytes, store.CentralDir(), writeErr, syncErr, closeErr)
+		} else {
+			logger.Warnf("ghostshell-daemon: span chunk NOT fully stored user=%-20s trace=%s bytes=%d (write=%v sync=%v close=%v)",
+				uname, traceID, spanBytes, writeErr, syncErr, closeErr)
+		}
+		return
+	}
+	logger.Debugf("ghostshell-daemon: span chunk stored user=%-20s trace=%s bytes=%d", uname, traceID, spanBytes)
 }
 
 func peerCred(c *net.UnixConn) (*unix.Ucred, error) {

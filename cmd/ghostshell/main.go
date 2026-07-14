@@ -175,6 +175,14 @@ func main() {
 	case "ansible-ingest":
 		// Hidden: called by the Ansible callback plugin subprocess.
 		err = ansible.Ingest(rest)
+	case "__report-span":
+		// Hidden: called by the trace shim (scripts/trace-shim.sh) to report one
+		// process-trace span. Fully fail-open — it ALWAYS exits 0, never blocks the
+		// shell, and emits nothing to stdout/stderr on the hot path. Handled here
+		// with an explicit return so the shared err-based exit path can never turn
+		// a dropped span into a non-zero exit that a trapping shell might observe.
+		reportSpan()
+		return
 	case "backup":
 		err = backup.RunCLI(rest)
 	case "completion":
@@ -195,6 +203,47 @@ func main() {
 
 func isHelpToken(s string) bool {
 	return s == "help" || s == "-h" || s == "--help"
+}
+
+// spanReportDeadline bounds the whole __report-span dial+write so a slow or
+// wedged daemon can never stall the traced shell.
+const spanReportDeadline = 300 * time.Millisecond
+
+// spanReportMaxBytes caps how much of stdin __report-span forwards. One report
+// is a handful of small JSON lines; the cap only stops a runaway producer.
+const spanReportMaxBytes = 8 * 1024 * 1024
+
+// reportSpan reads process-trace span JSON-lines from stdin, connects to the
+// daemon named by $GHOSTSHELL_TRACE_SOCK, writes "SPAN <traceID>\n" (traceID
+// from $GHOSTSHELL_TRACE_ID) and the lines, then closes. It is fail-open in
+// every branch: any missing env, dial failure, or write timeout results in a
+// silent return (and the caller exits 0). A short deadline guarantees it never
+// blocks the shell's hot path.
+func reportSpan() {
+	traceID := os.Getenv("GHOSTSHELL_TRACE_ID")
+	sock := os.Getenv("GHOSTSHELL_TRACE_SOCK")
+	if traceID == "" || sock == "" {
+		return
+	}
+	// Defense-in-depth: the traceID is written into a line-oriented protocol, so
+	// a whitespace/newline in it could inject a second command. Our own recorder
+	// only ever sets a hex id, and the daemon re-validates, but refuse anything
+	// unsafe here rather than send it.
+	if strings.ContainsAny(traceID, " \t\r\n") {
+		return
+	}
+	conn, err := net.DialTimeout("unix", sock, spanReportDeadline)
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(spanReportDeadline))
+	if _, err := fmt.Fprintf(conn, "SPAN %s\n", traceID); err != nil {
+		return
+	}
+	// Best-effort: forward the span lines and ignore the outcome. The deadline
+	// above bounds this copy, so a wedged daemon trips it instead of hanging.
+	_, _ = io.Copy(conn, io.LimitReader(os.Stdin, spanReportMaxBytes))
 }
 
 // gatePlayback prompts for the playback password (no-op when none is set) and
