@@ -417,11 +417,24 @@ usage: ghostshell tail [-n N] <sessionid>   print last N lines of a session (def
 -f     follow: stream live output from the daemon as it arrives
 `, true
 	case "tree":
-		return `ghostshell tree — central store as a users -> sessions tree (root)
+		return `ghostshell tree — store overview or a session's process tree (root)
 
-usage: ghostshell tree
+usage: ghostshell tree                         central store as a users -> sessions tree
+       ghostshell tree <session-id>            process tree of one session's commands
+       ghostshell tree --json <session-id>     that process tree as JSON (for tooling)
 
-Each session shows [STATUS TYPE], start time, duration, and command.
+With no argument, prints the whole central store as a users -> sessions tree;
+each session shows [STATUS TYPE], start time, duration, and command.
+
+With a <session-id>, prints that session's process tree: every command captured
+by the trace shim, nested under the shell that ran it beneath a synthetic
+"bash (session root)". Each node shows the command and [exit <code>, <dur>s].
+A session recorded without process-trace data reports that and exits 0
+(non-bash shells and pre-tracing recordings have no spans).
+
+--json emits the same tree as a nested JSON document: a synthetic root with a
+"children" array; each node has span_id, cmd, exit_code, start_ts, end_ts,
+duration_ns, and depth. It requires a <session-id>.
 `, true
 	case "status":
 		return `ghostshell status — operational health summary (root)

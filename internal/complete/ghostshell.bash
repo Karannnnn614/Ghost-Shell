@@ -44,6 +44,9 @@ _ghostshell() {
             COMPREPLY=( $(compgen -W "--all --user" -- "$cur") ) ;;
         tail)
             COMPREPLY=( $(compgen -W "-f -n $(ghostshell __complete central-sessions 2>/dev/null)" -- "$cur") ) ;;
+        tree)
+            # `tree <session-id>` shows a session's process tree; --json emits it as JSON.
+            COMPREPLY=( $(compgen -W "--json $(ghostshell __complete central-sessions 2>/dev/null)" -- "$cur") ) ;;
         export)
             COMPREPLY=( $(compgen -W "$(ghostshell __complete central-sessions 2>/dev/null)" -- "$cur") ) ;;
         search)
