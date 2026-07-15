@@ -9,6 +9,7 @@ package audit
 
 import (
 	"bufio"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -17,10 +18,12 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"golang.org/x/crypto/bcrypt"
 	"golang.org/x/term"
@@ -28,6 +31,7 @@ import (
 	"ghostshell/internal/cast"
 	"ghostshell/internal/config"
 	"ghostshell/internal/play"
+	"ghostshell/internal/span"
 	"ghostshell/internal/store"
 )
 
@@ -271,11 +275,36 @@ func daemonDialable(socket string) bool {
 	return true
 }
 
-// Tree handles `ghostshell tree` — users -> sessions.
+// Tree handles `ghostshell tree` and `ghostshell tree [--json] <session-id>`.
+//
+// With no positional argument it prints the whole central store as a
+// users -> sessions tree (the original behavior, unchanged). With a
+// <session-id> it prints that session's process tree: the commands captured by
+// the trace shim, nested by the shell that ran each one, under a synthetic
+// "bash (session root)". --json emits the same tree as a machine-readable JSON
+// document (see jsonNode) and requires a <session-id>.
 func Tree(args []string) error {
 	if err := requireRoot(); err != nil {
 		return err
 	}
+	fs := flag.NewFlagSet("tree", flag.ContinueOnError)
+	jsonOut := fs.Bool("json", false, "emit a session's process tree as JSON (requires <session-id>)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() == 0 {
+		if *jsonOut {
+			return fmt.Errorf("usage: ghostshell tree --json <session-id>  (--json needs a session id)")
+		}
+		return treeWholeStore()
+	}
+	return treeSession(fs.Arg(0), *jsonOut)
+}
+
+// treeWholeStore prints the central store as a users -> sessions tree — the
+// no-argument `ghostshell tree` view. Output is byte-for-byte identical to the
+// pre-extension behavior.
+func treeWholeStore() error {
 	users, err := store.Users()
 	if err != nil {
 		return notRoot(err)
@@ -337,6 +366,271 @@ func sessionKind(command string) string {
 		return "non-interactive"
 	}
 	return "interactive"
+}
+
+// --- process-tree view (`ghostshell tree [--json] <session-id>`) -----------
+
+// rootLabel is the synthetic root under which a session's top-level commands
+// (spans with no parent) are grouped: the interactive shell itself.
+const rootLabel = "bash (session root)"
+
+// maxTreeDepth bounds every recursion over the process tree (sort, render, JSON
+// build). The assembled tree is always finite, but capping recursion is a
+// defensive guarantee that a corrupt or hostile span set can never exhaust the
+// goroutine stack. Real interactive nesting is a handful of levels; 1000 is far
+// beyond any legitimate trace.
+const maxTreeDepth = 1000
+
+// treeNode is one node of the in-memory process tree. span is nil for the
+// synthetic root; every other node points at exactly one captured span.
+type treeNode struct {
+	span     *span.Span
+	children []*treeNode
+}
+
+// jsonNode is the machine-readable process-tree node emitted by
+// `ghostshell tree --json <session-id>`. It is a STABLE contract consumed by
+// `analyze` (Part D) — do NOT rename or drop fields without updating that
+// consumer. The whole document is the synthetic root node:
+//
+//	span_id      "" for the synthetic root; otherwise the span's globally-unique id
+//	cmd          the recorded command line ("bash (session root)" for the root)
+//	exit_code    the command's exit status (0 for the root)
+//	start_ts     start time in unix nanoseconds (0 for the root)
+//	end_ts       end time in unix nanoseconds (0 for the root)
+//	duration_ns  end_ts - start_ts, clamped to >= 0 (0 for the root)
+//	depth        recorded nesting depth (0 at the top interactive shell); -1 for the root
+//	children     child nodes, always present (never null), sorted by start_ts ascending
+type jsonNode struct {
+	SpanID     string     `json:"span_id"`
+	Cmd        string     `json:"cmd"`
+	ExitCode   int        `json:"exit_code"`
+	StartTS    int64      `json:"start_ts"`
+	EndTS      int64      `json:"end_ts"`
+	DurationNS int64      `json:"duration_ns"`
+	Depth      int        `json:"depth"`
+	Children   []jsonNode `json:"children"`
+}
+
+// treeSession renders (or JSON-emits) the process tree for one recorded session.
+// It resolves the session's cast file, reads the trace id stamped in its header,
+// decrypts and merges the session's span chunks, and builds the tree. It is
+// fail-open throughout: a session recorded without trace data, an absent or
+// unreadable span store, or corrupt spans yield a clear message or a partial
+// tree, never a crash.
+func treeSession(id string, jsonOut bool) error {
+	castPath, user, err := store.FindCentral(id)
+	if err != nil {
+		return notRoot(err)
+	}
+	h, herr := store.Header(castPath)
+	if herr != nil {
+		return fmt.Errorf("cannot read session %q: %w", id, herr)
+	}
+	traceID := ""
+	if h.Env != nil {
+		traceID = h.Env[span.HeaderTraceKey]
+	}
+	// No trace id in the header (recorded before tracing existed, a non-bash
+	// shell, or tracing disabled) is not an error — there is simply nothing to
+	// show. An id that fails validation is treated the same: it could only have
+	// come from a tampered header and must never reach the filesystem helpers.
+	if traceID == "" || !store.ValidTraceID(traceID) {
+		fmt.Printf("no process-trace data recorded for session %q\n", id)
+		return nil
+	}
+	spans := loadSpans(user, traceID)
+	root := buildSpanTree(spans)
+	if jsonOut {
+		return emitTreeJSON(os.Stdout, root)
+	}
+	renderTree(os.Stdout, root)
+	return nil
+}
+
+// loadSpans lists, decrypts, and merges every span chunk for a trace, returning
+// all spans it can recover. Every step is fail-open: a missing span directory, a
+// chunk that will not decrypt, or a corrupt JSON-lines record is skipped rather
+// than failing the whole view (span.ReadAll is itself fail-open).
+func loadSpans(user, traceID string) []span.Span {
+	chunks, err := store.SpanChunks(user, traceID)
+	if err != nil {
+		return nil
+	}
+	dir := store.SpanDir(user, traceID)
+	var all []span.Span
+	for _, name := range chunks {
+		rc, oerr := store.OpenCast(filepath.Join(dir, name))
+		if oerr != nil {
+			continue // unreadable/undecryptable chunk: drop it, keep going
+		}
+		s, _ := span.ReadAll(rc)
+		rc.Close()
+		all = append(all, s...)
+	}
+	return all
+}
+
+// buildSpanTree assembles spans into a tree rooted at a synthetic node. A span
+// with an empty ParentSpanID (a top-level command) is a direct child of the
+// root; otherwise it is attached to the node whose SpanID matches its
+// ParentSpanID. A span whose parent is unknown (dropped chunk, corrupt link) or
+// that names itself as its parent is reattached to the root so it stays visible
+// rather than being silently lost. Each node's children are sorted by StartTS
+// (ties broken by SpanID) for a stable, chronological rendering. Because every
+// node is linked into exactly one parent list, the structure reachable from the
+// root is always a finite tree — there is no cycle to loop on.
+func buildSpanTree(spans []span.Span) *treeNode {
+	root := &treeNode{}
+	byID := make(map[string]*treeNode, len(spans))
+	nodes := make([]*treeNode, 0, len(spans))
+	for i := range spans {
+		n := &treeNode{span: &spans[i]}
+		nodes = append(nodes, n)
+		if spans[i].SpanID != "" {
+			byID[spans[i].SpanID] = n // last write wins if two spans share an id
+		}
+	}
+	for _, n := range nodes {
+		parentID := n.span.ParentSpanID
+		if parentID == "" {
+			root.children = append(root.children, n)
+			continue
+		}
+		if p, ok := byID[parentID]; ok && p != n {
+			p.children = append(p.children, n)
+		} else {
+			root.children = append(root.children, n)
+		}
+	}
+	sortTree(root, 0)
+	return root
+}
+
+// sortTree orders each node's children chronologically (by StartTS, then SpanID
+// for determinism). The depth cap is defensive; the built tree is finite.
+func sortTree(n *treeNode, depth int) {
+	if depth >= maxTreeDepth {
+		return
+	}
+	sort.SliceStable(n.children, func(i, j int) bool {
+		a, b := n.children[i].span, n.children[j].span
+		if a.StartTS != b.StartTS {
+			return a.StartTS < b.StartTS
+		}
+		return a.SpanID < b.SpanID
+	})
+	for _, c := range n.children {
+		sortTree(c, depth+1)
+	}
+}
+
+// renderTree prints the process tree with box-drawing connectors, one command
+// per line as "<cmd>  [exit <code>, <dur>s]", nested under the synthetic root.
+func renderTree(w io.Writer, root *treeNode) {
+	fmt.Fprintln(w, rootLabel)
+	if len(root.children) == 0 {
+		fmt.Fprintln(w, "(no commands captured for this trace)")
+		return
+	}
+	renderChildren(w, root.children, "", 0)
+}
+
+func renderChildren(w io.Writer, children []*treeNode, prefix string, depth int) {
+	if depth >= maxTreeDepth {
+		fmt.Fprintf(w, "%s...(truncated at depth %d)\n", prefix, depth)
+		return
+	}
+	for i, c := range children {
+		last := i == len(children)-1
+		branch, indent := "├─ ", "│  "
+		if last {
+			branch, indent = "└─ ", "   "
+		}
+		fmt.Fprintf(w, "%s%s%s\n", prefix, branch, nodeLabel(c.span))
+		renderChildren(w, c.children, prefix+indent, depth+1)
+	}
+}
+
+// nodeLabel formats one span as "<cmd>  [exit <code>, <dur>s]". The command is
+// sanitized (control characters — including any ANSI escape — stripped and
+// newlines/tabs collapsed) so a recorded command line, which is attacker-
+// influenced content, cannot inject terminal escapes or extra lines into a root
+// operator's tree view.
+func nodeLabel(s *span.Span) string {
+	return fmt.Sprintf("%s  [exit %d, %.1fs]", sanitizeCmd(s.Cmd), s.ExitCode, durationSeconds(s))
+}
+
+// durationSeconds returns a span's duration in seconds, clamped to >= 0 (a
+// corrupt span with EndTS < StartTS must not print a negative duration).
+func durationSeconds(s *span.Span) float64 {
+	d := s.EndTS - s.StartTS
+	if d < 0 {
+		return 0
+	}
+	return float64(d) / 1e9
+}
+
+// sanitizeCmd makes a recorded command safe to print on one terminal line: tabs
+// and newlines collapse to single spaces and every other control character
+// (C0/C1/DEL, including ESC) is dropped, defeating terminal-escape injection
+// from recorded content, while ordinary printable/UTF-8 text is preserved.
+func sanitizeCmd(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		switch {
+		case r == '\t' || r == '\n' || r == '\r':
+			b.WriteByte(' ')
+		case unicode.IsControl(r):
+			// drop other control characters (defeats ANSI/escape injection)
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return strings.TrimSpace(b.String())
+}
+
+// emitTreeJSON writes the process tree as an indented JSON document (see
+// jsonNode). This is the machine-readable form consumed by `analyze` (Part D).
+func emitTreeJSON(w io.Writer, root *treeNode) error {
+	doc := toJSONNode(root, 0)
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	return enc.Encode(doc)
+}
+
+// toJSONNode converts an in-memory treeNode (and its subtree) to the exported
+// jsonNode shape. The synthetic root (span == nil) is emitted with the sentinel
+// values documented on jsonNode. children is always a (possibly empty) array,
+// never null, so consumers can iterate unconditionally.
+func toJSONNode(n *treeNode, depth int) jsonNode {
+	var jn jsonNode
+	if n.span == nil {
+		jn = jsonNode{SpanID: "", Cmd: rootLabel, Depth: -1}
+	} else {
+		s := n.span
+		d := s.EndTS - s.StartTS
+		if d < 0 {
+			d = 0
+		}
+		jn = jsonNode{
+			SpanID:     s.SpanID,
+			Cmd:        s.Cmd,
+			ExitCode:   s.ExitCode,
+			StartTS:    s.StartTS,
+			EndTS:      s.EndTS,
+			DurationNS: d,
+			Depth:      s.Depth,
+		}
+	}
+	jn.Children = []jsonNode{}
+	if depth < maxTreeDepth {
+		for _, c := range n.children {
+			jn.Children = append(jn.Children, toJSONNode(c, depth+1))
+		}
+	}
+	return jn
 }
 
 // Prune handles `ghostshell prune` — interactively delete recordings from the

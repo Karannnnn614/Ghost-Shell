@@ -80,6 +80,10 @@ contents:
     dst: /usr/share/doc/ghostshell/sshd-forcecommand.conf.example
     file_info:
       mode: 0644
+  - src: ./scripts/trace-shim.sh
+    dst: /usr/share/ghostshell/trace-shim.sh
+    file_info:
+      mode: 0644
   - src: scripts/ansible/ghostshell.py
     dst: /usr/share/ghostshell/ansible/ghostshell.py
     file_info:

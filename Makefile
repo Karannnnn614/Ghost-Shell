@@ -60,6 +60,7 @@ install: build
 	install -Dm644 internal/complete/ghostshell.bash $(DESTDIR)$(PREFIX)/share/bash-completion/completions/ghostshell
 	install -Dm755 scripts/ghostshell-ssh-wrap.sh $(DESTDIR)/usr/libexec/ghostshell-ssh-wrap
 	install -Dm644 scripts/sshd-forcecommand.conf.example $(DESTDIR)$(PREFIX)/share/doc/ghostshell/sshd-forcecommand.conf.example
+	install -Dm644 scripts/trace-shim.sh $(DESTDIR)/usr/share/ghostshell/trace-shim.sh
 	install -dm700 $(DESTDIR)/var/lib/ghostshell
 	install -dm750 $(DESTDIR)/var/log/ghostshell
 

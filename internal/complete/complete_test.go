@@ -11,6 +11,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"ghostshell/internal/config"
 )
 
 // captureStdout runs fn with os.Stdout redirected to a pipe and returns whatever
@@ -69,10 +71,48 @@ func TestScriptUnsupportedShellErrors(t *testing.T) {
 
 func TestCompleteSubcommands(t *testing.T) {
 	out := captureStdout(t, func() error { return Complete([]string{"subcommands"}) })
-	for _, want := range []string{"rec", "play", "ls", "tail", "completion"} {
+	for _, want := range []string{"rec", "play", "ls", "tail", "tree", "analyze", "completion"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("subcommands output missing %q; got %q", want, out)
 		}
+	}
+}
+
+// The embedded bash script must offer session-id completion for `tree` (reusing
+// the central-sessions candidate kind) and the new --json flag. This keeps the
+// completion script in sync with the `tree <session-id>` / `--json` forms the
+// CLI now accepts.
+func TestBashScriptCompletesTree(t *testing.T) {
+	out := captureStdout(t, func() error { return Script([]string{"bash"}) })
+	for _, want := range []string{"tree)", "__complete central-sessions", "--json"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("bash completion script missing %q for tree; got:\n%s", want, out)
+		}
+	}
+}
+
+// The embedded bash script must offer session-id completion for `analyze`
+// (reusing the central-sessions candidate kind) plus its flags, keeping the
+// completion script in sync with the `analyze <session-id>` form the CLI accepts.
+func TestBashScriptCompletesAnalyze(t *testing.T) {
+	out := captureStdout(t, func() error { return Script([]string{"bash"}) })
+	for _, want := range []string{"analyze)", "--no-ai", "--model", "--allow-remote", "__complete central-sessions"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("bash completion script missing %q for analyze; got:\n%s", want, out)
+		}
+	}
+}
+
+// central-sessions is the candidate kind reused for tree/tail/export session-id
+// completion; it must run without error and emit nothing extraneous on an empty
+// store (completion stays silent rather than failing).
+func TestCompleteCentralSessionsIsSilentOnEmptyStore(t *testing.T) {
+	t.Setenv("GHOSTSHELL_CENTRAL_DIR", t.TempDir())
+	config.Reset()
+	t.Cleanup(config.Reset)
+	out := captureStdout(t, func() error { return Complete([]string{"central-sessions"}) })
+	if strings.TrimSpace(out) != "" {
+		t.Errorf("central-sessions on an empty store printed %q, want nothing", out)
 	}
 }
 

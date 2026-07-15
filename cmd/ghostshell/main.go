@@ -160,6 +160,10 @@ func main() {
 		// Password gate — tree reveals every user's session metadata.
 		gatePlayback()
 		err = audit.Tree(rest)
+	case "analyze":
+		// Password gate — analyze reveals a session's recorded commands and output.
+		gatePlayback()
+		err = audit.Analyze(rest)
 	case "search":
 		// Password gate — search reveals matching output snippets.
 		gatePlayback()
@@ -175,6 +179,14 @@ func main() {
 	case "ansible-ingest":
 		// Hidden: called by the Ansible callback plugin subprocess.
 		err = ansible.Ingest(rest)
+	case "__report-span":
+		// Hidden: called by the trace shim (scripts/trace-shim.sh) to report one
+		// process-trace span. Fully fail-open — it ALWAYS exits 0, never blocks the
+		// shell, and emits nothing to stdout/stderr on the hot path. Handled here
+		// with an explicit return so the shared err-based exit path can never turn
+		// a dropped span into a non-zero exit that a trapping shell might observe.
+		reportSpan()
+		return
 	case "backup":
 		err = backup.RunCLI(rest)
 	case "completion":
@@ -195,6 +207,47 @@ func main() {
 
 func isHelpToken(s string) bool {
 	return s == "help" || s == "-h" || s == "--help"
+}
+
+// spanReportDeadline bounds the whole __report-span dial+write so a slow or
+// wedged daemon can never stall the traced shell.
+const spanReportDeadline = 300 * time.Millisecond
+
+// spanReportMaxBytes caps how much of stdin __report-span forwards. One report
+// is a handful of small JSON lines; the cap only stops a runaway producer.
+const spanReportMaxBytes = 8 * 1024 * 1024
+
+// reportSpan reads process-trace span JSON-lines from stdin, connects to the
+// daemon named by $GHOSTSHELL_TRACE_SOCK, writes "SPAN <traceID>\n" (traceID
+// from $GHOSTSHELL_TRACE_ID) and the lines, then closes. It is fail-open in
+// every branch: any missing env, dial failure, or write timeout results in a
+// silent return (and the caller exits 0). A short deadline guarantees it never
+// blocks the shell's hot path.
+func reportSpan() {
+	traceID := os.Getenv("GHOSTSHELL_TRACE_ID")
+	sock := os.Getenv("GHOSTSHELL_TRACE_SOCK")
+	if traceID == "" || sock == "" {
+		return
+	}
+	// Defense-in-depth: the traceID is written into a line-oriented protocol, so
+	// a whitespace/newline in it could inject a second command. Our own recorder
+	// only ever sets a hex id, and the daemon re-validates, but refuse anything
+	// unsafe here rather than send it.
+	if strings.ContainsAny(traceID, " \t\r\n") {
+		return
+	}
+	conn, err := net.DialTimeout("unix", sock, spanReportDeadline)
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(spanReportDeadline))
+	if _, err := fmt.Fprintf(conn, "SPAN %s\n", traceID); err != nil {
+		return
+	}
+	// Best-effort: forward the span lines and ignore the outcome. The deadline
+	// above bounds this copy, so a wedged daemon trips it instead of hanging.
+	_, _ = io.Copy(conn, io.LimitReader(os.Stdin, spanReportMaxBytes))
 }
 
 // gatePlayback prompts for the playback password (no-op when none is set) and
@@ -257,6 +310,8 @@ audit commands (central root-only store):
   ghostshell tail [-n N] <id>                 show last N lines of a session (default 20)
   ghostshell tail -f <id>                     live-stream an in-progress session (root)
   ghostshell tree                             users -> sessions tree (root)
+  ghostshell tree <id>                        one session's process tree (root)
+  ghostshell analyze <id>                     analyze a session: deterministic + optional local AI (root)
   ghostshell status                           daemon health, active sessions, store size (root)
   ghostshell search [opts] <string>           find a string across recordings (root)
   ghostshell export [-o file] [--force] <id>  decrypt a session to a plaintext cast (root)
@@ -368,11 +423,24 @@ usage: ghostshell tail [-n N] <sessionid>   print last N lines of a session (def
 -f     follow: stream live output from the daemon as it arrives
 `, true
 	case "tree":
-		return `ghostshell tree — central store as a users -> sessions tree (root)
+		return `ghostshell tree — store overview or a session's process tree (root)
 
-usage: ghostshell tree
+usage: ghostshell tree                         central store as a users -> sessions tree
+       ghostshell tree <session-id>            process tree of one session's commands
+       ghostshell tree --json <session-id>     that process tree as JSON (for tooling)
 
-Each session shows [STATUS TYPE], start time, duration, and command.
+With no argument, prints the whole central store as a users -> sessions tree;
+each session shows [STATUS TYPE], start time, duration, and command.
+
+With a <session-id>, prints that session's process tree: every command captured
+by the trace shim, nested under the shell that ran it beneath a synthetic
+"bash (session root)". Each node shows the command and [exit <code>, <dur>s].
+A session recorded without process-trace data reports that and exits 0
+(non-bash shells and pre-tracing recordings have no spans).
+
+--json emits the same tree as a nested JSON document: a synthetic root with a
+"children" array; each node has span_id, cmd, exit_code, start_ts, end_ts,
+duration_ns, and depth. It requires a <session-id>.
 `, true
 	case "status":
 		return `ghostshell status — operational health summary (root)
@@ -479,6 +547,32 @@ Configure in /etc/ghostshell/ghostshell.conf:
   backup_target = s3://bucket/prefix | gs://bucket/prefix | user@host:/path
 
 Access is enforced by filesystem permissions (central_dir is root:root 0700).
+`, true
+	case "analyze":
+		return `ghostshell analyze — analyze a session's process tree (root)
+
+usage: ghostshell analyze [--no-ai] [--model NAME] [--allow-remote] <session-id>
+
+Runs a deterministic pass over the session's captured process tree and ALWAYS
+prints it: failures (with the last line of output each produced), retry loops
+(the same command run repeatedly), repeated/cacheable commands, and the slowest
+commands. Then, unless --no-ai is given, it hands that compact summary to a
+LOCAL Ollama model for the judgment parts — a plain-English run summary, likely
+causes of each failure, and efficiency suggestions.
+
+The AI pass is fully optional and fully offline:
+  - it only runs if Ollama is reachable; if not, a hint to install it is printed
+    and the deterministic report still shows (analyze is never a hard dependency);
+  - the endpoint must be loopback (localhost) unless --allow-remote is passed, so
+    session data — which can contain secrets — never leaves this machine.
+
+A session recorded without process-trace data (a non-bash shell, tracing off, or
+a pre-tracing recording) reports that and exits 0.
+
+options:
+  --no-ai          print only the deterministic report (no model call; good for CI)
+  --model NAME     local Ollama model to use (default: llama3.1; must be pulled)
+  --allow-remote   permit a non-loopback OLLAMA_HOST (off by default)
 `, true
 	}
 	return "", false
