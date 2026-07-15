@@ -207,3 +207,65 @@ func TestShimShScriptDegradedNoop(t *testing.T) {
 		}
 	}
 }
+
+// countByCmd tallies how many spans recorded each command text.
+func countByCmd(spans []span.Span) map[string]int {
+	m := map[string]int{}
+	for _, s := range spans {
+		m[s.Cmd]++
+	}
+	return m
+}
+
+// Regression (phantom last-span): bash fires the DEBUG trap once more just before
+// the EXIT trap, re-presenting the LAST command of every scope. A naive EXIT flush
+// therefore double-reported the final command of the top shell AND of every nested
+// script. Each real command must be reported EXACTLY once. `indexByCmd` (used by
+// the other tests) hides this by keeping only the first occurrence, so assert on
+// per-command counts here.
+func TestShimNoDuplicateSpans(t *testing.T) {
+	aux := map[string]string{"inner.sh": "echo inner-first\necho inner-last\n"}
+	main := "echo top-first\nbash inner.sh\necho last\n"
+	spans := runShim(t, "tracedup", main, aux)
+	if len(spans) == 0 {
+		t.Fatal("no spans captured")
+	}
+	counts := countByCmd(spans)
+
+	// No command — most importantly the last one of each scope — may be doubled.
+	for cmd, n := range counts {
+		if n != 1 {
+			t.Errorf("command %q reported %d times, want exactly 1 (phantom last-span regression); all counts: %+v", cmd, n, counts)
+		}
+	}
+	// Every real command must be present exactly once (5 total: 3 top + 2 nested).
+	for _, cmd := range []string{"echo top-first", "bash inner.sh", "echo last", "echo inner-first", "echo inner-last"} {
+		if counts[cmd] != 1 {
+			t.Errorf("command %q count = %d, want 1; spans: %+v", cmd, counts[cmd], spans)
+		}
+	}
+}
+
+// Regression (worked example for the snapshot-parent design): a sibling command
+// that runs AFTER a nested `bash` call returns must attach to the ROOT, not dangle
+// under the nested subtree. `echo after` runs after `bash inner.sh` completes.
+func TestShimTrailingSiblingAttachesToRoot(t *testing.T) {
+	aux := map[string]string{"inner.sh": "echo inner-cmd\n"}
+	main := "echo before\nbash inner.sh\necho after\n"
+	spans := runShim(t, "traceafter", main, aux)
+	byCmd := indexByCmd(spans)
+
+	after, ok := byCmd["echo after"]
+	if !ok {
+		t.Fatalf("no span for the post-nesting sibling 'echo after'; got %+v", spans)
+	}
+	if after.Depth != 0 || after.ParentSpanID != "" {
+		t.Errorf("post-nesting sibling 'echo after': depth=%d parent=%q, want depth 0 / empty parent (attached to root)",
+			after.Depth, after.ParentSpanID)
+	}
+	// And it must not have been swallowed into the nested subtree.
+	inner := byCmd["echo inner-cmd"]
+	if after.ParentSpanID == inner.ParentSpanID && inner.ParentSpanID != "" {
+		t.Errorf("'echo after' wrongly shares the nested parent %q", inner.ParentSpanID)
+	}
+}

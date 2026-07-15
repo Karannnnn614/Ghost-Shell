@@ -59,6 +59,7 @@ __gs_pending_parent=""
 __gs_pending_cmd=""
 __gs_pending_start=""
 __gs_busy=""              # reentrancy guard (also inherited=1 by emit subshells)
+__gs_last_emit_cmd=""     # cmd of the most recently emitted span (phantom guard)
 
 # The base parent/depth are the values INHERITED from the environment at shim
 # load, snapshotted once. Every command in THIS shell attributes to __gs_base_parent
@@ -136,6 +137,9 @@ __gs_emit() {
 	else
 		(printf '%s\n' "$__gs_json_result" | ghostshell __report-span >/dev/null 2>&1 &)
 	fi
+	# Remember the command just emitted so the EXIT trap can recognize (and drop)
+	# the phantom span bash's pre-EXIT DEBUG firing leaves pending (see __gs_exit).
+	__gs_last_emit_cmd="$3"
 	return 0
 }
 
@@ -187,12 +191,19 @@ __gs_debug() {
 	return $ec
 }
 
-# __gs_exit is the EXIT trap. It flushes the last pending span with the shell's
-# final exit status. Works in both interactive and non-interactive bash (unlike
-# PROMPT_COMMAND, which never fires in a non-interactive script).
+# __gs_exit is the EXIT trap, a safety net for the last span. On bash >=4 a DEBUG
+# trap fires once more just before EXIT, re-presenting the LAST command (verified:
+# `trap dbg DEBUG; echo x` fires DEBUG a final time with $BASH_COMMAND="echo x").
+# That firing already finalized the real last span AND left a PHANTOM span pending
+# for the same command — so a naive flush here double-reports every scope's last
+# command. Guard against it: only emit if the pending command differs from the one
+# most recently emitted. That drops the phantom on bash >=4 while still flushing a
+# genuinely un-emitted last span on any shell that does NOT fire the pre-EXIT DEBUG
+# (fail-open: worst case a duplicate is avoided; a real last span is not lost).
+# PROMPT_COMMAND is not usable here — it never fires in a non-interactive script.
 __gs_exit() {
 	local ec=$?
-	if [ -n "$__gs_pending_span_id" ]; then
+	if [ -n "$__gs_pending_span_id" ] && [ "$__gs_pending_cmd" != "$__gs_last_emit_cmd" ]; then
 		__gs_now
 		__gs_emit "$__gs_pending_span_id" "$__gs_pending_parent" "$__gs_pending_cmd" \
 			"$__gs_pending_start" "$__gs_ns" "$ec" "$__gs_base_depth"
