@@ -16,7 +16,7 @@ _ghostshell() {
 
     # Top-level subcommand.
     if [ "$COMP_CWORD" -eq 1 ]; then
-        COMPREPLY=( $(compgen -W "rec play ls tail tree search export prune ansible init completion version --check help" -- "$cur") )
+        COMPREPLY=( $(compgen -W "rec play ls tail tree analyze search export prune ansible init completion version --check help" -- "$cur") )
         return
     fi
 
@@ -47,6 +47,9 @@ _ghostshell() {
         tree)
             # `tree <session-id>` shows a session's process tree; --json emits it as JSON.
             COMPREPLY=( $(compgen -W "--json $(ghostshell __complete central-sessions 2>/dev/null)" -- "$cur") ) ;;
+        analyze)
+            # `analyze <session-id>` runs the deterministic + optional local-AI pass.
+            COMPREPLY=( $(compgen -W "--no-ai --model --allow-remote $(ghostshell __complete central-sessions 2>/dev/null)" -- "$cur") ) ;;
         export)
             COMPREPLY=( $(compgen -W "$(ghostshell __complete central-sessions 2>/dev/null)" -- "$cur") ) ;;
         search)

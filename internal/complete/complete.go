@@ -46,7 +46,7 @@ func Complete(args []string) error {
 		// Keep in sync with the dispatch switch in cmd/ghostshell/main.go (user-facing
 		// commands only; hidden aliases ls-user/play-user/ansible-ingest/__complete
 		// are intentionally omitted from completion).
-		fmt.Println("init rec play ls tail tree status search export prune backup ansible completion version help")
+		fmt.Println("init rec play ls tail tree analyze status search export prune backup ansible completion version help")
 	case "local-sessions":
 		if names, err := castNames(store.Dir()); err == nil {
 			fmt.Println(strings.Join(sanitize(names), "\n"))

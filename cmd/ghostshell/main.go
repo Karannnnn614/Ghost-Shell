@@ -160,6 +160,10 @@ func main() {
 		// Password gate — tree reveals every user's session metadata.
 		gatePlayback()
 		err = audit.Tree(rest)
+	case "analyze":
+		// Password gate — analyze reveals a session's recorded commands and output.
+		gatePlayback()
+		err = audit.Analyze(rest)
 	case "search":
 		// Password gate — search reveals matching output snippets.
 		gatePlayback()
@@ -306,6 +310,8 @@ audit commands (central root-only store):
   ghostshell tail [-n N] <id>                 show last N lines of a session (default 20)
   ghostshell tail -f <id>                     live-stream an in-progress session (root)
   ghostshell tree                             users -> sessions tree (root)
+  ghostshell tree <id>                        one session's process tree (root)
+  ghostshell analyze <id>                     analyze a session: deterministic + optional local AI (root)
   ghostshell status                           daemon health, active sessions, store size (root)
   ghostshell search [opts] <string>           find a string across recordings (root)
   ghostshell export [-o file] [--force] <id>  decrypt a session to a plaintext cast (root)
@@ -541,6 +547,32 @@ Configure in /etc/ghostshell/ghostshell.conf:
   backup_target = s3://bucket/prefix | gs://bucket/prefix | user@host:/path
 
 Access is enforced by filesystem permissions (central_dir is root:root 0700).
+`, true
+	case "analyze":
+		return `ghostshell analyze — analyze a session's process tree (root)
+
+usage: ghostshell analyze [--no-ai] [--model NAME] [--allow-remote] <session-id>
+
+Runs a deterministic pass over the session's captured process tree and ALWAYS
+prints it: failures (with the last line of output each produced), retry loops
+(the same command run repeatedly), repeated/cacheable commands, and the slowest
+commands. Then, unless --no-ai is given, it hands that compact summary to a
+LOCAL Ollama model for the judgment parts — a plain-English run summary, likely
+causes of each failure, and efficiency suggestions.
+
+The AI pass is fully optional and fully offline:
+  - it only runs if Ollama is reachable; if not, a hint to install it is printed
+    and the deterministic report still shows (analyze is never a hard dependency);
+  - the endpoint must be loopback (localhost) unless --allow-remote is passed, so
+    session data — which can contain secrets — never leaves this machine.
+
+A session recorded without process-trace data (a non-bash shell, tracing off, or
+a pre-tracing recording) reports that and exits 0.
+
+options:
+  --no-ai          print only the deterministic report (no model call; good for CI)
+  --model NAME     local Ollama model to use (default: llama3.1; must be pulled)
+  --allow-remote   permit a non-loopback OLLAMA_HOST (off by default)
 `, true
 	}
 	return "", false

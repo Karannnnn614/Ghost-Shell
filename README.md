@@ -246,6 +246,8 @@ These read the central root-only store and require root:
 | `ghostshell tail [-n N] <id>` | Show last N lines of a session's recorded output (default 20). |
 | `ghostshell tail -f <id>` | Live-stream an in-progress session from the daemon. |
 | `ghostshell tree` | Print a users → sessions tree. |
+| `ghostshell tree <id>` `[--json]` | Print one session's **process tree** — the commands captured by the trace shim, nested by the shell that ran each, with exit codes and durations. `--json` for tooling. |
+| `ghostshell analyze <id>` `[--no-ai] [--model N] [--allow-remote]` | Analyze a session's process tree: a deterministic pass (failures, retry loops, repeated commands, slowest steps) plus an optional **fully local** AI summary via Ollama. |
 | `ghostshell search [--from T] [--to T] [--user U] [-i] <pattern>` | Find a string across recordings. `--from`/`--to` accept any `date -d` format. |
 | `ghostshell export [-o file] <id>` | Decrypt a recording to a plaintext asciinema cast. |
 | `ghostshell prune [--yes]` | Interactively delete recordings by user and time. |
@@ -319,6 +321,52 @@ Will delete 4 session(s), 2.1 MiB total:
 Delete these 4 session(s)? [yes/NO] yes
 pruned 4 session(s), freed 2.1 MiB
 ```
+
+### Process tree & local analysis
+
+Beyond the flat replay, a recorded session can be viewed as a **structured process
+tree** — which command ran which, nested by the shell that spawned it, with per-command
+exit status and timing:
+
+```text
+$ sudo ghostshell tree 20260711T142031-4471
+bash (session root)
+├─ npm install         [exit 0, 12.4s]
+├─ python migrate.py   [exit 0, 0.8s]
+├─ docker compose up   [exit 0, 3.2s]
+└─ ./deploy.sh         [exit 1, 5.9s]
+   ├─ git pull         [exit 0, 0.4s]
+   └─ pytest           [exit 1, 5.1s]
+```
+
+`ghostshell analyze <id>` runs a deterministic pass over that tree (failures with the
+output they produced, retry loops, repeated/cacheable commands, slowest steps) and then,
+unless `--no-ai` is given, hands the compact summary to a **local** model via
+[Ollama](https://ollama.com) for a plain-English review. It is **fully offline**: the
+endpoint must be loopback unless you pass `--allow-remote`, so session data — which can
+contain secrets — never leaves the machine. If Ollama isn't installed the deterministic
+report still prints; the AI pass is never a hard dependency.
+
+> #### What is and isn't traced — honestly
+>
+> The process tree is captured by a bash **trace shim** (`DEBUG`/`EXIT` traps), not by
+> kernel-level process tracing. That means:
+>
+> - ✅ **Interactive `bash`** sessions are traced (the recorder launches the shell with
+>   `--rcfile`, which sources your real rc first).
+> - ✅ **Nested `bash` scripts** (`./deploy.sh` with a `#!/bin/bash` shebang, `bash script.sh`,
+>   `bash -c …`) are traced, and their commands nest under the parent — this is how the
+>   `deploy.sh → git pull, pytest` nesting above is produced (via `BASH_ENV`).
+> - ⚠️ **`#!/bin/sh` (dash) and non-bash shells** (`zsh`, `fish`) are **not** structurally
+>   traced — `sh` has no `DEBUG` trap or `BASH_ENV` in the form the shim needs. Those
+>   sessions are still fully captured in the raw encrypted transcript (`play`/`tail`/
+>   `search`/`export`), just without a process tree. `ghostshell tree <id>` says so plainly.
+> - ⚠️ **Non-shell subprocesses** (a Python or Node process that itself spawns children via
+>   `subprocess`/`child_process`) are **not** expanded into the tree — that would need
+>   language-level instrumentation. Their output is still in the raw transcript.
+>
+> A dropped span is always acceptable and never blocks the shell (same fail-open principle
+> as recording itself). Spans are encrypted at rest with the same key as the recordings.
 
 ### Encryption at rest
 

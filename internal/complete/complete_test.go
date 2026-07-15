@@ -71,7 +71,7 @@ func TestScriptUnsupportedShellErrors(t *testing.T) {
 
 func TestCompleteSubcommands(t *testing.T) {
 	out := captureStdout(t, func() error { return Complete([]string{"subcommands"}) })
-	for _, want := range []string{"rec", "play", "ls", "tail", "completion"} {
+	for _, want := range []string{"rec", "play", "ls", "tail", "tree", "analyze", "completion"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("subcommands output missing %q; got %q", want, out)
 		}
@@ -87,6 +87,18 @@ func TestBashScriptCompletesTree(t *testing.T) {
 	for _, want := range []string{"tree)", "__complete central-sessions", "--json"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("bash completion script missing %q for tree; got:\n%s", want, out)
+		}
+	}
+}
+
+// The embedded bash script must offer session-id completion for `analyze`
+// (reusing the central-sessions candidate kind) plus its flags, keeping the
+// completion script in sync with the `analyze <session-id>` form the CLI accepts.
+func TestBashScriptCompletesAnalyze(t *testing.T) {
+	out := captureStdout(t, func() error { return Script([]string{"bash"}) })
+	for _, want := range []string{"analyze)", "--no-ai", "--model", "--allow-remote", "__complete central-sessions"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("bash completion script missing %q for analyze; got:\n%s", want, out)
 		}
 	}
 }
